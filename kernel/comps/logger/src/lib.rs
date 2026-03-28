@@ -20,7 +20,8 @@ use component::{ComponentInitError, init_component};
 
 mod aster_logger;
 mod console;
-
+//对外暴露接口 方便控制接口调用
+pub use aster_logger::{clear_dyndbg_rule, get_dyndbg_rule, update_dyndbg_rule};
 pub use console::_print;
 
 #[init_component]

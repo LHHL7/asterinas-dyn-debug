@@ -9,7 +9,8 @@ use crate::{
         procfs::{
             ProcDir,
             sys::kernel::{
-                cap_last_cap::CapLastCapFileOps, pid_max::PidMaxFileOps, yama::YamaDirOps,
+                cap_last_cap::CapLastCapFileOps, dynamic_debug::DynamicDebugFileOps,
+                pid_max::PidMaxFileOps, yama::YamaDirOps,
             },
             template::{
                 DirOps, ProcDirBuilder, lookup_child_from_table, populate_children_from_table,
@@ -21,6 +22,7 @@ use crate::{
 };
 
 mod cap_last_cap;
+mod dynamic_debug;
 mod pid_max;
 mod yama;
 
@@ -37,10 +39,10 @@ impl KernelDirOps {
             .build()
             .unwrap()
     }
-
     #[expect(clippy::type_complexity)]
     const STATIC_ENTRIES: &'static [(&'static str, fn(Weak<dyn Inode>) -> Arc<dyn Inode>)] = &[
         ("cap_last_cap", CapLastCapFileOps::new_inode),
+        ("dynamic_debug", DynamicDebugFileOps::new_inode),
         ("pid_max", PidMaxFileOps::new_inode),
         ("yama", YamaDirOps::new_inode),
     ];
@@ -49,7 +51,7 @@ impl KernelDirOps {
 impl DirOps for KernelDirOps {
     fn lookup_child(&self, dir: &ProcDir<Self>, name: &str) -> Result<Arc<dyn Inode>> {
         let mut cached_children = dir.cached_children().write();
-
+        //从静态表中查找子节点 并调用对应的构造函数创建inode
         if let Some(child) =
             lookup_child_from_table(name, &mut cached_children, Self::STATIC_ENTRIES, |f| {
                 (f)(dir.this_weak().clone())
