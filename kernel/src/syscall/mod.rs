@@ -8,6 +8,7 @@
 )]
 
 pub use clock_gettime::ClockId;
+use core::sync::atomic::{AtomicBool, Ordering};
 use ostd::arch::cpu::context::UserContext;
 pub use timer_create::create_timer;
 
@@ -340,6 +341,15 @@ use dispatch_fn_inner;
 use impl_syscall_nums_and_dispatch_fn;
 use syscall_handler;
 
+static SYSCALL_LOG_ENABLED: AtomicBool = AtomicBool::new(true);
+//解析命令行参数，设置SYSCALL_LOG_ENABLED的值
+aster_cmdline::define_flag_param!("syscall_log", SYSCALL_LOG_ENABLED);
+
+pub fn is_syscall_log_enabled() -> bool {
+    //原子读
+    SYSCALL_LOG_ENABLED.load(Ordering::Relaxed)
+}
+
 pub struct SyscallArgument {
     syscall_number: u64,
     args: [u64; 6],
@@ -391,7 +401,7 @@ pub fn handle_syscall(ctx: &Context, user_ctx: &mut UserContext) {
 #[macro_export]
 macro_rules! log_syscall_entry {
     ($syscall_name: tt) => {
-        if log::log_enabled!(log::Level::Info) {
+        if $crate::syscall::is_syscall_log_enabled() && log::log_enabled!(log::Level::Info) {
             let syscall_name_str = stringify!($syscall_name);
             let pid = $crate::current!().pid();
             let tid = {
