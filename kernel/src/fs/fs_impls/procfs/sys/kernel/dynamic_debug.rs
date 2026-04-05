@@ -27,16 +27,24 @@ impl DynamicDebugFileOps {
 impl FileOps for DynamicDebugFileOps {
     fn read_at(&self, offset: usize, writer: &mut VmWriter) -> Result<usize> {
         let mut printer = VmPrinter::new_skip(writer, offset);
-        let (file_keyword, module_keyword) = aster_logger::get_dyndbg_rule();
+        let rule = aster_logger::get_dyndbg_rule_snapshot();
         //打印过滤规则
         writeln!(
             printer,
-            "file={} module={}",
-            file_keyword.as_deref().unwrap_or("<none>"),
-            module_keyword.as_deref().unwrap_or("<none>")
+            "file={} module={} func={} line={}",
+            rule.file_keyword.as_deref().unwrap_or("<none>"),
+            rule.module_keyword.as_deref().unwrap_or("<none>"),
+            rule.function_keyword.as_deref().unwrap_or("<none>"),
+            rule.line
+                .map(|line| line.to_string())
+                .as_deref()
+                .unwrap_or("<none>")
         )?;
         //用法提示
-        writeln!(printer, "usage: file=<kw> +p|-p | module=<kw> +p|-p")?;
+        writeln!(
+            printer,
+            "usage: [file=<kw>] [module=<kw>] [func=<kw>] [line=<n>] +p|-p"
+        )?;
 
         Ok(printer.bytes_written())
     }
@@ -60,21 +68,25 @@ impl FileOps for DynamicDebugFileOps {
 }
 
 fn apply_command(command: &str) -> Result<()> {
-    //切分命令
-    let mut parts = command.split_ascii_whitespace();
-    //选择器
-    let selector = parts
-        .next()
-        .ok_or_else(|| Error::with_message(Errno::EINVAL, "missing selector"))?;
-    //操作
-    let action = parts
-        .next()
-        .ok_or_else(|| Error::with_message(Errno::EINVAL, "missing action (+p/-p)"))?;
-
-    if parts.next().is_some() {
-        return_errno_with_message!(Errno::EINVAL, "unexpected trailing tokens");
+    // Last token is action, previous tokens are selectors.
+    let mut parts = command.split_ascii_whitespace().collect::<Vec<_>>();
+    if parts.is_empty() {
+        return_errno_with_message!(Errno::EINVAL, "empty command");
     }
-    //将选择器由key=value形式切分成key和value
+
+    let action = parts
+        .pop()
+        .ok_or_else(|| Error::with_message(Errno::EINVAL, "missing action (+p/-p)"))?;
+    let selectors = parts;
+
+    match action {
+        "+p" => enable_selectors(&selectors),
+        "-p" => disable_selectors(&selectors),
+        _ => return_errno_with_message!(Errno::EINVAL, "action must be +p or -p"),
+    }
+}
+
+fn parse_selector(selector: &str) -> Result<(&str, &str)> {
     let (key, value) = selector
         .split_once('=')
         .ok_or_else(|| Error::with_message(Errno::EINVAL, "selector must be key=value"))?;
@@ -82,35 +94,65 @@ fn apply_command(command: &str) -> Result<()> {
         return_errno_with_message!(Errno::EINVAL, "selector value must not be empty");
     }
 
-    match action {
-        "+p" => enable_selector(key, value),
-        "-p" => disable_selector(key),
-        _ => return_errno_with_message!(Errno::EINVAL, "action must be +p or -p"),
-    }
+    Ok((key, value))
 }
 
-// +p表示启用key过滤器，-p表示禁用key对应的过滤器
-// 目前file module各最多过滤一个关键字
-fn enable_selector(key: &str, value: &str) -> Result<()> {
-    let (file_keyword, module_keyword) = aster_logger::get_dyndbg_rule();
-
-    match key {
-        "file" => aster_logger::update_dyndbg_rule(Some(value), module_keyword.as_deref()),
-        "module" => aster_logger::update_dyndbg_rule(file_keyword.as_deref(), Some(value)),
-        _ => return_errno_with_message!(Errno::EINVAL, "selector key must be file or module"),
+fn enable_selectors(selectors: &[&str]) -> Result<()> {
+    if selectors.is_empty() {
+        return_errno_with_message!(Errno::EINVAL, "+p requires at least one selector");
     }
+
+    let mut rule = aster_logger::get_dyndbg_rule_snapshot();
+    for selector in selectors {
+        let (key, value) = parse_selector(selector)?;
+        match key {
+            "file" => rule.file_keyword = Some(value.to_string()),
+            "module" => rule.module_keyword = Some(value.to_string()),
+            "func" => rule.function_keyword = Some(value.to_string()),
+            "line" => {
+                let line = value.parse::<u32>().map_err(|_| {
+                    Error::with_message(Errno::EINVAL, "line must be a valid u32")
+                })?;
+                rule.line = Some(line);
+            }
+            _ => {
+                return_errno_with_message!(
+                    Errno::EINVAL,
+                    "selector key must be file/module/func/line"
+                )
+            }
+        }
+    }
+
+    aster_logger::set_dyndbg_rule(rule);
 
     Ok(())
 }
 
-fn disable_selector(key: &str) -> Result<()> {
-    let (file_keyword, module_keyword) = aster_logger::get_dyndbg_rule();
-
-    match key {
-        "file" => aster_logger::update_dyndbg_rule(None, module_keyword.as_deref()),
-        "module" => aster_logger::update_dyndbg_rule(file_keyword.as_deref(), None),
-        _ => return_errno_with_message!(Errno::EINVAL, "selector key must be file or module"),
+fn disable_selectors(selectors: &[&str]) -> Result<()> {
+    if selectors.is_empty() {
+        aster_logger::clear_dyndbg_rule();
+        return Ok(());
     }
+
+    let mut rule = aster_logger::get_dyndbg_rule_snapshot();
+    for selector in selectors {
+        let (key, _value) = parse_selector(selector)?;
+        match key {
+            "file" => rule.file_keyword = None,
+            "module" => rule.module_keyword = None,
+            "func" => rule.function_keyword = None,
+            "line" => rule.line = None,
+            _ => {
+                return_errno_with_message!(
+                    Errno::EINVAL,
+                    "selector key must be file/module/func/line"
+                )
+            }
+        }
+    }
+
+    aster_logger::set_dyndbg_rule(rule);
 
     Ok(())
 }
