@@ -211,20 +211,71 @@ fn dyndbg_match_record(record: &Record) -> bool {
     let state = DYNDBG_STATE.lock();
     state.rule.matches_record(record)
 }
+
+// 对外暴露快照 外部通过快照来查看和设置规则，避免直接暴露内部的Rule结构，减少耦合
+#[derive(Debug, Clone, Default)]
+pub struct DyndbgRuleSnapshot {
+    pub file_keyword: Option<String>,
+    pub module_keyword: Option<String>,
+    pub function_keyword: Option<String>,
+    pub line: Option<u32>,
+}
+
+impl From<DyndbgRuleSnapshot> for DyndbgRule {
+    fn from(snapshot: DyndbgRuleSnapshot) -> Self {
+        Self {
+            file_keyword: snapshot.file_keyword,
+            module_keyword: snapshot.module_keyword,
+            function_keyword: snapshot.function_keyword,
+            line: snapshot.line,
+        }
+    }
+}
+
+impl From<&DyndbgRule> for DyndbgRuleSnapshot {
+    fn from(rule: &DyndbgRule) -> Self {
+        Self {
+            file_keyword: rule.file_keyword.clone(),
+            module_keyword: rule.module_keyword.clone(),
+            function_keyword: rule.function_keyword.clone(),
+            line: rule.line,
+        }
+    }
+}
+
+// Backward-compatible API.
 pub fn update_dyndbg_rule(file_keyword: Option<&str>, module_keyword: Option<&str>) {
-    let mut rule = DYNDBG_RULE.lock();
-    rule.file_keyword = file_keyword.map(String::from);
-    rule.module_keyword = module_keyword.map(String::from);
+    let snapshot = DyndbgRuleSnapshot {
+        file_keyword: file_keyword.map(String::from),
+        module_keyword: module_keyword.map(String::from),
+        function_keyword: None,
+        line: None,
+    };
+    set_dyndbg_rule(snapshot);
 }
-//运行时调用，获取当前过滤规则
 
+// Backward-compatible API.
 pub fn get_dyndbg_rule() -> (Option<String>, Option<String>) {
-    let rule = DYNDBG_RULE.lock();
-    (rule.file_keyword.clone(), rule.module_keyword.clone())
+    let snapshot = get_dyndbg_rule_snapshot();
+    (snapshot.file_keyword, snapshot.module_keyword)
 }
 
-//清空过滤规则
+pub fn get_dyndbg_rule_snapshot() -> DyndbgRuleSnapshot {
+    let state = DYNDBG_STATE.lock();
+    DyndbgRuleSnapshot::from(&state.rule)
+}
+
+pub fn set_dyndbg_rule(snapshot: DyndbgRuleSnapshot) {
+    let mut state = DYNDBG_STATE.lock();
+    state.rule = snapshot.into();
+    refresh_registered_descriptors(&state);
+}
+
 pub fn clear_dyndbg_rule() {
+    set_dyndbg_rule(DyndbgRuleSnapshot::default());
+}
+
+
 //引入新宏
 #[macro_export]
 macro_rules! dyndbg_debug {
