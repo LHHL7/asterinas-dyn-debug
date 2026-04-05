@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::string::String;
+use alloc::{string::String, vec::Vec};
+use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 
 use log::{Metadata, Record};
@@ -11,14 +12,16 @@ use ostd::timer::Jiffies;
 struct AsterLogger;
 
 static LOGGER: AsterLogger = AsterLogger;
-//全局过滤规则，spinlock自旋锁保护
-static DYNDBG_RULE: SpinLock<DyndbgRule> = SpinLock::new(DyndbgRule::new());
+// Dynamic debug state protected by a single lock so rule updates and descriptor
+// registrations are serialized.
+static DYNDBG_STATE: SpinLock<DyndbgState> = SpinLock::new(DyndbgState::new());
 
-//新增过滤规则（文件名和模块名）
-#[derive(Debug, Default)]
-struct DyndbgRule {
+#[derive(Debug, Clone, Default)]
+pub struct DyndbgRule {
     file_keyword: Option<String>,
     module_keyword: Option<String>,
+    function_keyword: Option<String>,
+    line: Option<u32>,
 }
 
 impl DyndbgRule {
@@ -26,7 +29,125 @@ impl DyndbgRule {
         Self {
             file_keyword: None,
             module_keyword: None,
+            function_keyword: None,
+            line: None,
         }
+    }
+
+    // 判断规则是否非空
+    fn has_any_selector(&self) -> bool {
+        self.file_keyword.is_some()
+            || self.module_keyword.is_some()
+            || self.function_keyword.is_some()
+            || self.line.is_some()
+    }
+
+    // 判断记录是否匹配规则
+    fn matches_record(&self, record: &Record) -> bool {
+        if !self.has_any_selector() {
+            return true;
+        }
+
+        selector_match(&self.file_keyword, record.file())
+            && selector_match(&self.module_keyword, record.module_path())
+            && selector_match(&self.function_keyword, None)
+            && self.line.is_none_or(|line| record.line() == Some(line))
+    }
+
+    // 判断描述符是否匹配规则
+    fn matches_descriptor(&self, descriptor: &DebugDescriptor) -> bool {
+        if !self.has_any_selector() {
+            return true;
+        }
+
+        selector_match(&self.file_keyword, Some(descriptor.file))
+            && selector_match(&self.module_keyword, Some(descriptor.module_path))
+            && selector_match(&self.function_keyword, descriptor.function)
+            && self.line.is_none_or(|line| descriptor.line == line)
+    }
+}
+
+// value包含keyword则匹配，当selector为None时总是匹配（真正的match逻辑是&&）
+fn selector_match(selector: &Option<String>, value: Option<&str>) -> bool {
+    match selector {
+        None => true,
+        Some(needle) => value.is_some_and(|value| value.contains(needle)),
+    }
+}
+
+struct DyndbgState {
+    rule: DyndbgRule,
+    descriptors: Vec<&'static DebugDescriptor>,
+}
+
+impl DyndbgState {
+    const fn new() -> Self {
+        Self {
+            rule: DyndbgRule::new(),
+            descriptors: Vec::new(),
+        }
+    }
+}
+
+pub struct DebugDescriptor {
+    enabled: AtomicBool,
+    registered: AtomicBool,
+    file: &'static str,
+    module_path: &'static str,
+    function: Option<&'static str>,
+    line: u32,
+}
+
+impl DebugDescriptor {
+    pub const fn new(
+        file: &'static str,
+        module_path: &'static str,
+        function: Option<&'static str>,
+        line: u32,
+    ) -> Self {
+        Self {
+            enabled: AtomicBool::new(true),
+            registered: AtomicBool::new(false),
+            file,
+            module_path,
+            function,
+            line,
+        }
+    }
+
+    //descriptor首次注册时，根据全局rule来store其enabled状态，并插入全局vec中
+    //此时registered状态会被置为true，后续再次调用ensure_registered时会直接返回，保证不会重复注册
+    fn ensure_registered(&'static self) {
+        if self
+            .registered
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+
+        let mut state = DYNDBG_STATE.lock();
+        self.enabled
+            .store(state.rule.matches_descriptor(self), Ordering::Relaxed);
+        state.descriptors.push(self);
+    }
+
+    fn is_enabled(&self) -> bool {
+        self.enabled.load(Ordering::Relaxed)
+    }
+}
+
+pub fn dyndbg_should_log(descriptor: &'static DebugDescriptor) -> bool {
+    descriptor.ensure_registered();
+    descriptor.is_enabled()
+}
+
+//当rule更新时,遍历全局vec，根据新的rule来更新每个descriptor的enabled状态（遍历待优化）
+fn refresh_registered_descriptors(state: &DyndbgState) {
+    for descriptor in &state.descriptors {
+        descriptor
+            .enabled
+            .store(state.rule.matches_descriptor(descriptor), Ordering::Relaxed);
     }
 }
 
@@ -36,8 +157,8 @@ impl log::Log for AsterLogger {
     }
 
     fn log(&self, record: &Record) {
-        //增加分支单独处理debug模式，进行动态过滤
-        if record.level() == log::Level::Debug && !dyndbg_match(record) {
+        // For legacy `log::debug!` callsites, keep record-based matching.
+        if record.level() == log::Level::Debug && !dyndbg_match_record(record) {
             return;
         }
 
@@ -86,30 +207,10 @@ fn print_logs(record: &Record, timestamp: &Duration) {
     ));
 }
 
-fn dyndbg_match(record: &Record) -> bool {
-    let rule = DYNDBG_RULE.lock();
-    let file_keyword = rule.file_keyword.as_deref();
-    let module_keyword = rule.module_keyword.as_deref();
-    //利用record提供的元数据进行匹配
-    let file_matched = file_keyword
-        .map(|needle| record.file().is_some_and(|file| file.contains(needle)))
-        .unwrap_or(false);
-    let module_matched = module_keyword
-        .map(|needle| {
-            record
-                .module_path()
-                .is_some_and(|module_path| module_path.contains(needle))
-        })
-        .unwrap_or(false);
-
-    match (file_keyword, module_keyword) {
-        (None, None) => true, 
-        // 默认为true代表放行所有 debug 日志，与原来一致
-        // 默认为false代表封锁所有 debug 日志，按需通过规则放行
-        _ => file_matched || module_matched,
-    }
+fn dyndbg_match_record(record: &Record) -> bool {
+    let state = DYNDBG_STATE.lock();
+    state.rule.matches_record(record)
 }
-//运行时调用，更新过滤规则
 pub fn update_dyndbg_rule(file_keyword: Option<&str>, module_keyword: Option<&str>) {
     let mut rule = DYNDBG_RULE.lock();
     rule.file_keyword = file_keyword.map(String::from);
@@ -124,7 +225,35 @@ pub fn get_dyndbg_rule() -> (Option<String>, Option<String>) {
 
 //清空过滤规则
 pub fn clear_dyndbg_rule() {
-    update_dyndbg_rule(None, None);
+//引入新宏
+#[macro_export]
+macro_rules! dyndbg_debug {
+    ($($arg:tt)+) => {{
+        static DESCRIPTOR: $crate::DebugDescriptor = $crate::DebugDescriptor::new(
+            file!(),
+            module_path!(),
+            None,
+            line!(),
+        );
+        if $crate::dyndbg_should_log(&DESCRIPTOR) {
+            log::debug!($($arg)+);
+        }
+    }};
+}
+//引入新宏 其静态变量需要function name作为参数传入 其针对调试函数的场景(后续看看能否与dyndbg_debug宏合并)
+#[macro_export]
+macro_rules! dyndbg_debug_func {
+    ($func:expr, $($arg:tt)+) => {{
+        static DESCRIPTOR: $crate::DebugDescriptor = $crate::DebugDescriptor::new(
+            file!(),
+            module_path!(),
+            Some($func),
+            line!(),
+        );
+        if $crate::dyndbg_should_log(&DESCRIPTOR) {
+            log::debug!($($arg)+);
+        }
+    }};
 }
 
 pub(super) fn init() {
