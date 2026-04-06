@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::{string::String, vec::Vec};
+use alloc::{
+    collections::{BTreeMap, BTreeSet},
+    string::String,
+    vec::Vec,
+};
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 
@@ -78,6 +82,11 @@ fn selector_match(selector: &Option<String>, value: Option<&str>) -> bool {
 struct DyndbgState {
     rule: DyndbgRule,
     descriptors: Vec<&'static DebugDescriptor>,
+    enabled_descriptors: Vec<&'static DebugDescriptor>,
+    file_index: BTreeMap<&'static str, Vec<&'static DebugDescriptor>>,
+    module_index: BTreeMap<&'static str, Vec<&'static DebugDescriptor>>,
+    function_index: BTreeMap<&'static str, Vec<&'static DebugDescriptor>>,
+    line_index: BTreeMap<u32, Vec<&'static DebugDescriptor>>,
 }
 
 impl DyndbgState {
@@ -85,6 +94,147 @@ impl DyndbgState {
         Self {
             rule: DyndbgRule::new(),
             descriptors: Vec::new(),
+            enabled_descriptors: Vec::new(),
+            file_index: BTreeMap::new(),
+            module_index: BTreeMap::new(),
+            function_index: BTreeMap::new(),
+            line_index: BTreeMap::new(),
+        }
+    }
+
+    //注册descriptor时会将其插入到全局的descriptors列表和各个索引表中，
+    //并根据当前的rule来设置其enabled状态，如果enabled则插入到enabled_descriptors列表中
+    fn register_descriptor(&mut self, descriptor: &'static DebugDescriptor) {
+        self.descriptors.push(descriptor);
+        insert_index_entry(&mut self.file_index, descriptor.file, descriptor);
+        insert_index_entry(&mut self.module_index, descriptor.module_path, descriptor);
+        if let Some(function) = descriptor.function {
+            insert_index_entry(&mut self.function_index, function, descriptor);
+        }
+        insert_index_entry(&mut self.line_index, descriptor.line, descriptor);
+
+        let is_enabled = self.rule.matches_descriptor(descriptor);
+        descriptor.enabled.store(is_enabled, Ordering::Relaxed);
+        if is_enabled {
+            self.enabled_descriptors.push(descriptor);
+        }
+    }
+
+    //设置新规则时 更新descriptor
+    fn refresh_registered_descriptors(&mut self) {
+        //先根据新规则收集出新的enabled descriptor列表
+        let new_enabled = self.collect_enabled_descriptors();
+        //再将新旧列表做diff来最小化更新操作
+        self.apply_enabled_diff(new_enabled);
+    }
+
+    // 规则精筛 最终匹配只认matches_descriptor
+    fn collect_enabled_descriptors(&self) -> Vec<&'static DebugDescriptor> {
+        let mut candidates = self.collect_rule_candidates();
+        candidates.retain(|descriptor| self.rule.matches_descriptor(descriptor));
+        candidates
+    }
+
+    // 索引粗筛 挑出尽可能少的候选者供精筛使用，减少matches_descriptor的调用次数提升性能
+    //根据rule的各个selector在对应的索引表里查找匹配的descriptor列表，并取交集得到最终的候选列表
+    fn collect_rule_candidates(&self) -> Vec<&'static DebugDescriptor> {
+        let mut candidates: Option<Vec<&'static DebugDescriptor>> = None;
+
+        if let Some(file_keyword) = &self.rule.file_keyword {
+            let matched = collect_by_keyword(&self.file_index, file_keyword);
+            intersect_candidates(&mut candidates, matched);
+        }
+
+        if let Some(module_keyword) = &self.rule.module_keyword {
+            let matched = collect_by_keyword(&self.module_index, module_keyword);
+            intersect_candidates(&mut candidates, matched);
+        }
+
+        if let Some(function_keyword) = &self.rule.function_keyword {
+            let matched = collect_by_keyword(&self.function_index, function_keyword);
+            intersect_candidates(&mut candidates, matched);
+        }
+
+        if let Some(line) = self.rule.line {
+            let matched = self.line_index.get(&line).cloned().unwrap_or_default();
+            intersect_candidates(&mut candidates, matched);
+        }
+
+        candidates.unwrap_or_else(|| self.descriptors.clone())
+    }
+
+    fn apply_enabled_diff(&mut self, new_enabled: Vec<&'static DebugDescriptor>) {
+        let old_ids = self
+            .enabled_descriptors
+            .iter()
+            .map(|descriptor| descriptor_id(descriptor))
+            .collect::<BTreeSet<_>>();
+        let new_ids = new_enabled
+            .iter()
+            .map(|descriptor| descriptor_id(descriptor))
+            .collect::<BTreeSet<_>>();
+
+        //将不再enabled的descriptor置为false
+        for descriptor in &self.enabled_descriptors {
+            if !new_ids.contains(&descriptor_id(descriptor)) {
+                descriptor.enabled.store(false, Ordering::Relaxed);
+            }
+        }
+        //将新enabled的descriptor置为true
+        for descriptor in &new_enabled {
+            if !old_ids.contains(&descriptor_id(descriptor)) {
+                descriptor.enabled.store(true, Ordering::Relaxed);
+            }
+        }
+
+        //并更新enabled_descriptors列表
+        self.enabled_descriptors = new_enabled;
+    }
+}
+
+// 获取descriptor的唯一id，这里直接使用其地址作为id，因为每个descriptor都是一个静态变量，地址唯一
+fn descriptor_id(descriptor: &DebugDescriptor) -> usize {
+    descriptor as *const DebugDescriptor as usize
+}
+
+// 将descriptor插入到指定的索引表里
+fn insert_index_entry<K: Ord + Copy>(
+    index: &mut BTreeMap<K, Vec<&'static DebugDescriptor>>,
+    key: K,
+    descriptor: &'static DebugDescriptor,
+) {
+    index.entry(key).or_default().push(descriptor);
+}
+
+//通过keyword在索引表里查找匹配的descriptor列表
+fn collect_by_keyword(
+    index: &BTreeMap<&'static str, Vec<&'static DebugDescriptor>>,
+    keyword: &str,
+) -> Vec<&'static DebugDescriptor> {
+    let mut matched = Vec::new();
+    for (indexed_value, descriptors) in index {
+        if indexed_value.contains(keyword) {
+            matched.extend(descriptors.iter().copied());
+        }
+    }
+    matched
+}
+
+//将新匹配的descriptor列表与已有的候选列表取交集，更新候选列表
+fn intersect_candidates(
+    candidates: &mut Option<Vec<&'static DebugDescriptor>>,
+    matched: Vec<&'static DebugDescriptor>,
+) {
+    match candidates {
+        None => {
+            *candidates = Some(matched);
+        }
+        Some(existing) => {
+            let matched_ids = matched
+                .iter()
+                .map(|descriptor| descriptor_id(descriptor))
+                .collect::<BTreeSet<_>>();
+            existing.retain(|descriptor| matched_ids.contains(&descriptor_id(descriptor)));
         }
     }
 }
@@ -127,9 +277,7 @@ impl DebugDescriptor {
         }
 
         let mut state = DYNDBG_STATE.lock();
-        self.enabled
-            .store(state.rule.matches_descriptor(self), Ordering::Relaxed);
-        state.descriptors.push(self);
+        state.register_descriptor(self);
     }
 
     fn is_enabled(&self) -> bool {
@@ -140,15 +288,6 @@ impl DebugDescriptor {
 pub fn dyndbg_should_log(descriptor: &'static DebugDescriptor) -> bool {
     descriptor.ensure_registered();
     descriptor.is_enabled()
-}
-
-//当rule更新时,遍历全局vec，根据新的rule来更新每个descriptor的enabled状态（遍历待优化）
-fn refresh_registered_descriptors(state: &DyndbgState) {
-    for descriptor in &state.descriptors {
-        descriptor
-            .enabled
-            .store(state.rule.matches_descriptor(descriptor), Ordering::Relaxed);
-    }
 }
 
 impl log::Log for AsterLogger {
@@ -268,7 +407,7 @@ pub fn get_dyndbg_rule_snapshot() -> DyndbgRuleSnapshot {
 pub fn set_dyndbg_rule(snapshot: DyndbgRuleSnapshot) {
     let mut state = DYNDBG_STATE.lock();
     state.rule = snapshot.into();
-    refresh_registered_descriptors(&state);
+    state.refresh_registered_descriptors();
 }
 
 pub fn clear_dyndbg_rule() {
