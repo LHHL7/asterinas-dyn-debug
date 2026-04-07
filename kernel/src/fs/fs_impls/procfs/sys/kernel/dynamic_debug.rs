@@ -27,23 +27,30 @@ impl DynamicDebugFileOps {
 impl FileOps for DynamicDebugFileOps {
     fn read_at(&self, offset: usize, writer: &mut VmWriter) -> Result<usize> {
         let mut printer = VmPrinter::new_skip(writer, offset);
-        let rule = aster_logger::get_dyndbg_rule_snapshot();
-        //打印过滤规则
-        writeln!(
-            printer,
-            "file={} module={} func={} line={}",
-            rule.file_keyword.as_deref().unwrap_or("<none>"),
-            rule.module_keyword.as_deref().unwrap_or("<none>"),
-            rule.function_keyword.as_deref().unwrap_or("<none>"),
-            rule.line
-                .map(|line| line.to_string())
-                .as_deref()
-                .unwrap_or("<none>")
-        )?;
+        let rules = aster_logger::get_dyndbg_rule_chain_snapshot();
+        // 打印规则链（last-match-wins）。
+        writeln!(printer, "rules={} (last-match-wins)", rules.len())?;
+        for (index, entry) in rules.iter().enumerate() {
+            writeln!(
+                printer,
+                "{}: file={} module={} func={} line={} {}p",
+                index,
+                entry.rule.file_keyword.as_deref().unwrap_or("*"),
+                entry.rule.module_keyword.as_deref().unwrap_or("*"),
+                entry.rule.function_keyword.as_deref().unwrap_or("*"),
+                entry
+                    .rule
+                    .line
+                    .map(|line| line.to_string())
+                    .as_deref()
+                    .unwrap_or("*"),
+                if entry.enabled { "+" } else { "-" },
+            )?;
+        }
         //用法提示
         writeln!(
             printer,
-            "usage: [file=<kw>] [module=<kw>] [func=<kw>] [line=<n>] +p|-p"
+            "usage: [file=<kw>] [module=<kw>] [func=<kw>] [line=<n>] +p|-p | del <id> | clear"
         )?;
 
         Ok(printer.bytes_written())
@@ -68,6 +75,15 @@ impl FileOps for DynamicDebugFileOps {
 }
 
 fn apply_command(command: &str) -> Result<()> {
+    if command == "clear" {
+        aster_logger::clear_dyndbg_rules();
+        return Ok(());
+    }
+
+    if let Some(rule_id) = command.strip_prefix("del ") {
+        return delete_rule(rule_id.trim());
+    }
+
     // Last token is action, previous tokens are selectors.
     let mut parts = command.split_ascii_whitespace().collect::<Vec<_>>();
     if parts.is_empty() {
@@ -80,10 +96,26 @@ fn apply_command(command: &str) -> Result<()> {
     let selectors = parts;
 
     match action {
-        "+p" => enable_selectors(&selectors),
-        "-p" => disable_selectors(&selectors),
+        "+p" => append_rule(&selectors, true),
+        "-p" => append_rule(&selectors, false),
         _ => return_errno_with_message!(Errno::EINVAL, "action must be +p or -p"),
     }
+}
+
+fn delete_rule(rule_id: &str) -> Result<()> {
+    if rule_id.is_empty() {
+        return_errno_with_message!(Errno::EINVAL, "missing rule id");
+    }
+
+    let rule_id = rule_id
+        .parse::<usize>()
+        .map_err(|_| Error::with_message(Errno::EINVAL, "rule id must be a valid usize"))?;
+
+    if !aster_logger::remove_dyndbg_rule_by_id(rule_id) {
+        return_errno_with_message!(Errno::EINVAL, "rule id out of range");
+    }
+
+    Ok(())
 }
 
 fn parse_selector(selector: &str) -> Result<(&str, &str)> {
@@ -97,12 +129,8 @@ fn parse_selector(selector: &str) -> Result<(&str, &str)> {
     Ok((key, value))
 }
 
-fn enable_selectors(selectors: &[&str]) -> Result<()> {
-    if selectors.is_empty() {
-        return_errno_with_message!(Errno::EINVAL, "+p requires at least one selector");
-    }
-
-    let mut rule = aster_logger::get_dyndbg_rule_snapshot();
+fn append_rule(selectors: &[&str], enabled: bool) -> Result<()> {
+    let mut rule = aster_logger::DyndbgRuleSnapshot::default();
     for selector in selectors {
         let (key, value) = parse_selector(selector)?;
         match key {
@@ -110,9 +138,9 @@ fn enable_selectors(selectors: &[&str]) -> Result<()> {
             "module" => rule.module_keyword = Some(value.to_string()),
             "func" => rule.function_keyword = Some(value.to_string()),
             "line" => {
-                let line = value.parse::<u32>().map_err(|_| {
-                    Error::with_message(Errno::EINVAL, "line must be a valid u32")
-                })?;
+                let line = value
+                    .parse::<u32>()
+                    .map_err(|_| Error::with_message(Errno::EINVAL, "line must be a valid u32"))?;
                 rule.line = Some(line);
             }
             _ => {
@@ -124,35 +152,7 @@ fn enable_selectors(selectors: &[&str]) -> Result<()> {
         }
     }
 
-    aster_logger::set_dyndbg_rule(rule);
-
-    Ok(())
-}
-
-fn disable_selectors(selectors: &[&str]) -> Result<()> {
-    if selectors.is_empty() {
-        aster_logger::clear_dyndbg_rule();
-        return Ok(());
-    }
-
-    let mut rule = aster_logger::get_dyndbg_rule_snapshot();
-    for selector in selectors {
-        let (key, _value) = parse_selector(selector)?;
-        match key {
-            "file" => rule.file_keyword = None,
-            "module" => rule.module_keyword = None,
-            "func" => rule.function_keyword = None,
-            "line" => rule.line = None,
-            _ => {
-                return_errno_with_message!(
-                    Errno::EINVAL,
-                    "selector key must be file/module/func/line"
-                )
-            }
-        }
-    }
-
-    aster_logger::set_dyndbg_rule(rule);
+    aster_logger::append_dyndbg_rule(rule, enabled);
 
     Ok(())
 }

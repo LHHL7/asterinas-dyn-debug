@@ -536,6 +536,18 @@ pub fn clear_dyndbg_rules() {
     state.refresh_registered_descriptors();
 }
 
+// 通过vec的id删除规则
+pub fn remove_dyndbg_rule_by_id(rule_id: usize) -> bool {
+    let mut state = DYNDBG_STATE.lock();
+    if rule_id >= state.rules.len() {
+        return false;
+    }
+
+    state.rules.remove(rule_id);
+    state.refresh_registered_descriptors();
+    true
+}
+
 //引入新宏
 #[macro_export]
 macro_rules! dyndbg_debug {
