@@ -5,12 +5,13 @@ use alloc::{
     string::String,
     vec::Vec,
 };
-use core::sync::atomic::{AtomicBool, Ordering};
-use core::time::Duration;
+use core::{
+    sync::atomic::{AtomicBool, Ordering},
+    time::Duration,
+};
 
 use log::{Metadata, Record};
-use ostd::sync::SpinLock;
-use ostd::timer::Jiffies;
+use ostd::{sync::SpinLock, timer::Jiffies};
 
 /// The logger used for Asterinas.
 struct AsterLogger;
@@ -19,6 +20,13 @@ static LOGGER: AsterLogger = AsterLogger;
 // Dynamic debug state protected by a single lock so rule updates and descriptor
 // registrations are serialized.
 static DYNDBG_STATE: SpinLock<DyndbgState> = SpinLock::new(DyndbgState::new());
+const DEFAULT_DEBUG_ENABLED: bool = false;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DyndbgRuleAction {
+    Enable,
+    Disable,
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct DyndbgRule {
@@ -29,15 +37,6 @@ pub struct DyndbgRule {
 }
 
 impl DyndbgRule {
-    const fn new() -> Self {
-        Self {
-            file_keyword: None,
-            module_keyword: None,
-            function_keyword: None,
-            line: None,
-        }
-    }
-
     // 判断规则是否非空
     fn has_any_selector(&self) -> bool {
         self.file_keyword.is_some()
@@ -80,7 +79,7 @@ fn selector_match(selector: &Option<String>, value: Option<&str>) -> bool {
 }
 
 struct DyndbgState {
-    rule: DyndbgRule,
+    rules: Vec<DyndbgRuleEntry>,
     descriptors: Vec<&'static DebugDescriptor>,
     enabled_descriptors: Vec<&'static DebugDescriptor>,
     file_index: BTreeMap<&'static str, Vec<&'static DebugDescriptor>>,
@@ -89,10 +88,16 @@ struct DyndbgState {
     line_index: BTreeMap<u32, Vec<&'static DebugDescriptor>>,
 }
 
+#[derive(Debug, Clone)]
+struct DyndbgRuleEntry {
+    rule: DyndbgRule,
+    action: DyndbgRuleAction,
+}
+
 impl DyndbgState {
     const fn new() -> Self {
         Self {
-            rule: DyndbgRule::new(),
+            rules: Vec::new(),
             descriptors: Vec::new(),
             enabled_descriptors: Vec::new(),
             file_index: BTreeMap::new(),
@@ -103,7 +108,7 @@ impl DyndbgState {
     }
 
     //注册descriptor时会将其插入到全局的descriptors列表和各个索引表中，
-    //并根据当前的rule来设置其enabled状态，如果enabled则插入到enabled_descriptors列表中
+    //并根据rule来设置其enabled状态，如果enabled则插入到enabled_descriptors列表中
     fn register_descriptor(&mut self, descriptor: &'static DebugDescriptor) {
         self.descriptors.push(descriptor);
         insert_index_entry(&mut self.file_index, descriptor.file, descriptor);
@@ -113,7 +118,7 @@ impl DyndbgState {
         }
         insert_index_entry(&mut self.line_index, descriptor.line, descriptor);
 
-        let is_enabled = self.rule.matches_descriptor(descriptor);
+        let is_enabled = self.matches_descriptor(descriptor);
         descriptor.enabled.store(is_enabled, Ordering::Relaxed);
         if is_enabled {
             self.enabled_descriptors.push(descriptor);
@@ -130,37 +135,86 @@ impl DyndbgState {
 
     // 规则精筛 最终匹配只认matches_descriptor
     fn collect_enabled_descriptors(&self) -> Vec<&'static DebugDescriptor> {
+        //空规则时根据默认值决定是全开还是全关
+        if self.rules.is_empty() {
+            if DEFAULT_DEBUG_ENABLED {
+                return self.descriptors.clone();
+            }
+            return Vec::new();
+        }
+
         let mut candidates = self.collect_rule_candidates();
-        candidates.retain(|descriptor| self.rule.matches_descriptor(descriptor));
+        candidates.retain(|descriptor| self.matches_descriptor(descriptor));
         candidates
     }
 
     // 索引粗筛 挑出尽可能少的候选者供精筛使用，减少matches_descriptor的调用次数提升性能
-    //根据rule的各个selector在对应的索引表里查找匹配的descriptor列表，并取交集得到最终的候选列表
+    // 获取所有规则候选集的并集
     fn collect_rule_candidates(&self) -> Vec<&'static DebugDescriptor> {
+        let mut union = Vec::new();
+        let mut seen = BTreeSet::new();
+
+        for entry in &self.rules {
+            let matched = self.collect_candidates_for_rule(&entry.rule);
+            for descriptor in matched {
+                let id = descriptor_id(descriptor);
+                if seen.insert(id) {
+                    union.push(descriptor);
+                }
+            }
+        }
+
+        union
+    }
+
+    //单条规则来收集候选集
+    //根据rule的各个selector在对应的索引表里查找匹配的descriptor列表，并取交集得到最终的候选列表
+    fn collect_candidates_for_rule(&self, rule: &DyndbgRule) -> Vec<&'static DebugDescriptor> {
         let mut candidates: Option<Vec<&'static DebugDescriptor>> = None;
 
-        if let Some(file_keyword) = &self.rule.file_keyword {
+        if let Some(file_keyword) = &rule.file_keyword {
             let matched = collect_by_keyword(&self.file_index, file_keyword);
             intersect_candidates(&mut candidates, matched);
         }
 
-        if let Some(module_keyword) = &self.rule.module_keyword {
+        if let Some(module_keyword) = &rule.module_keyword {
             let matched = collect_by_keyword(&self.module_index, module_keyword);
             intersect_candidates(&mut candidates, matched);
         }
 
-        if let Some(function_keyword) = &self.rule.function_keyword {
+        if let Some(function_keyword) = &rule.function_keyword {
             let matched = collect_by_keyword(&self.function_index, function_keyword);
             intersect_candidates(&mut candidates, matched);
         }
 
-        if let Some(line) = self.rule.line {
+        if let Some(line) = rule.line {
             let matched = self.line_index.get(&line).cloned().unwrap_or_default();
             intersect_candidates(&mut candidates, matched);
         }
 
         candidates.unwrap_or_else(|| self.descriptors.clone())
+    }
+
+    //最终的对单个描述符的裁决逻辑，所有rule过一遍，后面规则优先级高于前面规则
+    fn matches_descriptor(&self, descriptor: &DebugDescriptor) -> bool {
+        let mut enabled = DEFAULT_DEBUG_ENABLED;
+        for entry in &self.rules {
+            if entry.rule.matches_descriptor(descriptor) {
+                enabled = entry.action == DyndbgRuleAction::Enable;
+            }
+        }
+        enabled
+    }
+
+    // 兼容旧的record-based接口
+    fn matches_record(&self, record: &Record) -> bool {
+        let mut enabled = DEFAULT_DEBUG_ENABLED;
+        for entry in &self.rules {
+            if entry.rule.matches_record(record) {
+                enabled = entry.action == DyndbgRuleAction::Enable;
+            }
+        }
+        enabled
     }
 
     fn apply_enabled_diff(&mut self, new_enabled: Vec<&'static DebugDescriptor>) {
@@ -256,7 +310,7 @@ impl DebugDescriptor {
         line: u32,
     ) -> Self {
         Self {
-            enabled: AtomicBool::new(true),
+            enabled: AtomicBool::new(DEFAULT_DEBUG_ENABLED),
             registered: AtomicBool::new(false),
             file,
             module_path,
@@ -348,7 +402,7 @@ fn print_logs(record: &Record, timestamp: &Duration) {
 
 fn dyndbg_match_record(record: &Record) -> bool {
     let state = DYNDBG_STATE.lock();
-    state.rule.matches_record(record)
+    state.matches_record(record)
 }
 
 // 对外暴露快照 外部通过快照来查看和设置规则，避免直接暴露内部的Rule结构，减少耦合
@@ -358,6 +412,12 @@ pub struct DyndbgRuleSnapshot {
     pub module_keyword: Option<String>,
     pub function_keyword: Option<String>,
     pub line: Option<u32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DyndbgRuleEntrySnapshot {
+    pub rule: DyndbgRuleSnapshot,
+    pub enabled: bool,
 }
 
 impl From<DyndbgRuleSnapshot> for DyndbgRule {
@@ -382,6 +442,28 @@ impl From<&DyndbgRule> for DyndbgRuleSnapshot {
     }
 }
 
+impl From<DyndbgRuleEntrySnapshot> for DyndbgRuleEntry {
+    fn from(snapshot: DyndbgRuleEntrySnapshot) -> Self {
+        Self {
+            rule: snapshot.rule.into(),
+            action: if snapshot.enabled {
+                DyndbgRuleAction::Enable
+            } else {
+                DyndbgRuleAction::Disable
+            },
+        }
+    }
+}
+
+impl From<&DyndbgRuleEntry> for DyndbgRuleEntrySnapshot {
+    fn from(entry: &DyndbgRuleEntry) -> Self {
+        Self {
+            rule: DyndbgRuleSnapshot::from(&entry.rule),
+            enabled: entry.action == DyndbgRuleAction::Enable,
+        }
+    }
+}
+
 // Backward-compatible API.
 pub fn update_dyndbg_rule(file_keyword: Option<&str>, module_keyword: Option<&str>) {
     let snapshot = DyndbgRuleSnapshot {
@@ -399,21 +481,60 @@ pub fn get_dyndbg_rule() -> (Option<String>, Option<String>) {
     (snapshot.file_keyword, snapshot.module_keyword)
 }
 
+// 获取规则链最后一条规则快照
 pub fn get_dyndbg_rule_snapshot() -> DyndbgRuleSnapshot {
     let state = DYNDBG_STATE.lock();
-    DyndbgRuleSnapshot::from(&state.rule)
+    state
+        .rules
+        .last()
+        .map(|entry| DyndbgRuleSnapshot::from(&entry.rule))
+        .unwrap_or_default()
 }
 
+// 清空规则链，新设置一条规则
 pub fn set_dyndbg_rule(snapshot: DyndbgRuleSnapshot) {
     let mut state = DYNDBG_STATE.lock();
-    state.rule = snapshot.into();
+    state.rules.clear();
+    state.rules.push(DyndbgRuleEntry {
+        rule: snapshot.into(),
+        action: DyndbgRuleAction::Enable,
+    });
     state.refresh_registered_descriptors();
 }
 
+//清空规则链
 pub fn clear_dyndbg_rule() {
-    set_dyndbg_rule(DyndbgRuleSnapshot::default());
+    clear_dyndbg_rules();
 }
 
+// 向规则链追加规则
+pub fn append_dyndbg_rule(snapshot: DyndbgRuleSnapshot, enabled: bool) {
+    let mut state = DYNDBG_STATE.lock();
+    state.rules.push(
+        DyndbgRuleEntrySnapshot {
+            rule: snapshot,
+            enabled,
+        }
+        .into(),
+    );
+    state.refresh_registered_descriptors();
+}
+
+// 获取整个规则链快照
+pub fn get_dyndbg_rule_chain_snapshot() -> Vec<DyndbgRuleEntrySnapshot> {
+    let state = DYNDBG_STATE.lock();
+    state
+        .rules
+        .iter()
+        .map(DyndbgRuleEntrySnapshot::from)
+        .collect()
+}
+
+pub fn clear_dyndbg_rules() {
+    let mut state = DYNDBG_STATE.lock();
+    state.rules.clear();
+    state.refresh_registered_descriptors();
+}
 
 //引入新宏
 #[macro_export]

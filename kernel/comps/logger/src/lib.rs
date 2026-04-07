@@ -16,14 +16,15 @@
 
 extern crate alloc;
 
-use component::{ComponentInitError, init_component};
+use component::{init_component, ComponentInitError};
 
 mod aster_logger;
 mod console;
 //对外暴露接口 方便控制接口调用
 pub use aster_logger::{
-    DebugDescriptor, DyndbgRuleSnapshot, clear_dyndbg_rule, dyndbg_should_log, get_dyndbg_rule,
-    get_dyndbg_rule_snapshot, set_dyndbg_rule, update_dyndbg_rule,
+    append_dyndbg_rule, clear_dyndbg_rule, clear_dyndbg_rules, dyndbg_should_log, get_dyndbg_rule,
+    get_dyndbg_rule_chain_snapshot, get_dyndbg_rule_snapshot, set_dyndbg_rule, update_dyndbg_rule,
+    DebugDescriptor, DyndbgRuleEntrySnapshot, DyndbgRuleSnapshot,
 };
 pub use console::_print;
 
