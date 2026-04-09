@@ -6,7 +6,7 @@ use alloc::{
     vec::Vec,
 };
 use core::{
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
     time::Duration,
 };
 
@@ -20,6 +20,8 @@ static LOGGER: AsterLogger = AsterLogger;
 // Dynamic debug state protected by a single lock so rule updates and descriptor
 // registrations are serialized.
 static DYNDBG_STATE: SpinLock<DyndbgState> = SpinLock::new(DyndbgState::new());
+// Active generation of `enabled_slots` used by the fast path.
+static DYNDBG_GENERATION: AtomicU64 = AtomicU64::new(0);
 const DEFAULT_DEBUG_ENABLED: bool = false;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,7 +83,6 @@ fn selector_match(selector: &Option<String>, value: Option<&str>) -> bool {
 struct DyndbgState {
     rules: Vec<DyndbgRuleEntry>,
     descriptors: Vec<&'static DebugDescriptor>,
-    enabled_descriptors: Vec<&'static DebugDescriptor>,
     file_index: BTreeMap<&'static str, Vec<&'static DebugDescriptor>>,
     module_index: BTreeMap<&'static str, Vec<&'static DebugDescriptor>>,
     function_index: BTreeMap<&'static str, Vec<&'static DebugDescriptor>>,
@@ -99,7 +100,6 @@ impl DyndbgState {
         Self {
             rules: Vec::new(),
             descriptors: Vec::new(),
-            enabled_descriptors: Vec::new(),
             file_index: BTreeMap::new(),
             module_index: BTreeMap::new(),
             function_index: BTreeMap::new(),
@@ -108,7 +108,7 @@ impl DyndbgState {
     }
 
     //注册descriptor时会将其插入到全局的descriptors列表和各个索引表中，
-    //并根据rule来设置其enabled状态，如果enabled则插入到enabled_descriptors列表中
+    //并根据rule链来设置初始enabled状态
     fn register_descriptor(&mut self, descriptor: &'static DebugDescriptor) {
         self.descriptors.push(descriptor);
         insert_index_entry(&mut self.file_index, descriptor.file, descriptor);
@@ -119,18 +119,16 @@ impl DyndbgState {
         insert_index_entry(&mut self.line_index, descriptor.line, descriptor);
 
         let is_enabled = self.matches_descriptor(descriptor);
-        descriptor.enabled.store(is_enabled, Ordering::Relaxed);
-        if is_enabled {
-            self.enabled_descriptors.push(descriptor);
-        }
+        let generation = DYNDBG_GENERATION.load(Ordering::Acquire);
+        descriptor.init_enabled_slots(generation, is_enabled);
     }
 
     //设置新规则时 更新descriptor
     fn refresh_registered_descriptors(&mut self) {
         //先根据新规则收集出新的enabled descriptor列表
         let new_enabled = self.collect_enabled_descriptors();
-        //再将新旧列表做diff来最小化更新操作
-        self.apply_enabled_diff(new_enabled);
+        //规则计算完成后，批量写入下一代slot并原子提交generation。
+        self.commit_enabled_generation(new_enabled);
     }
 
     // 规则精筛 最终匹配只认matches_descriptor
@@ -217,33 +215,29 @@ impl DyndbgState {
         enabled
     }
 
-    fn apply_enabled_diff(&mut self, new_enabled: Vec<&'static DebugDescriptor>) {
-        let old_ids = self
-            .enabled_descriptors
-            .iter()
-            .map(|descriptor| descriptor_id(descriptor))
-            .collect::<BTreeSet<_>>();
+    fn commit_enabled_generation(&mut self, new_enabled: Vec<&'static DebugDescriptor>) {
         let new_ids = new_enabled
             .iter()
             .map(|descriptor| descriptor_id(descriptor))
             .collect::<BTreeSet<_>>();
+        let current_generation = DYNDBG_GENERATION.load(Ordering::Relaxed);
+        let next_generation = current_generation.wrapping_add(1);
+        let next_slot = generation_slot(next_generation);
 
-        //将不再enabled的descriptor置为false
-        for descriptor in &self.enabled_descriptors {
-            if !new_ids.contains(&descriptor_id(descriptor)) {
-                descriptor.enabled.store(false, Ordering::Relaxed);
-            }
-        }
-        //将新enabled的descriptor置为true
-        for descriptor in &new_enabled {
-            if !old_ids.contains(&descriptor_id(descriptor)) {
-                descriptor.enabled.store(true, Ordering::Relaxed);
-            }
+        // 所有descriptor先写入下一代slot，最后一次性发布generation。
+        for descriptor in &self.descriptors {
+            let enabled = new_ids.contains(&descriptor_id(descriptor));
+            descriptor.set_enabled_slot(next_slot, enabled);
         }
 
-        //并更新enabled_descriptors列表
-        self.enabled_descriptors = new_enabled;
+        DYNDBG_GENERATION.store(next_generation, Ordering::Release);
     }
+}
+
+// 取generation的最低位作为当前使用的slot index，0或1
+#[inline]
+const fn generation_slot(generation: u64) -> usize {
+    (generation & 1) as usize
 }
 
 // 获取descriptor的唯一id，这里直接使用其地址作为id，因为每个descriptor都是一个静态变量，地址唯一
@@ -294,7 +288,7 @@ fn intersect_candidates(
 }
 
 pub struct DebugDescriptor {
-    enabled: AtomicBool,
+    enabled_slots: [AtomicBool; 2],
     registered: AtomicBool,
     file: &'static str,
     module_path: &'static str,
@@ -310,7 +304,10 @@ impl DebugDescriptor {
         line: u32,
     ) -> Self {
         Self {
-            enabled: AtomicBool::new(DEFAULT_DEBUG_ENABLED),
+            enabled_slots: [
+                AtomicBool::new(DEFAULT_DEBUG_ENABLED),
+                AtomicBool::new(DEFAULT_DEBUG_ENABLED),
+            ],
             registered: AtomicBool::new(false),
             file,
             module_path,
@@ -334,8 +331,28 @@ impl DebugDescriptor {
         state.register_descriptor(self);
     }
 
+    //初始化两个槽位
+    fn init_enabled_slots(&self, generation: u64, enabled: bool) {
+        let slot = generation_slot(generation);
+        self.enabled_slots[slot].store(enabled, Ordering::Relaxed);
+        self.enabled_slots[slot ^ 1].store(enabled, Ordering::Relaxed);
+    }
+
+    //写入对应的槽位
+    fn set_enabled_slot(&self, slot: usize, enabled: bool) {
+        self.enabled_slots[slot].store(enabled, Ordering::Relaxed);
+    }
+
     fn is_enabled(&self) -> bool {
-        self.enabled.load(Ordering::Relaxed)
+        loop {
+            let generation_before = DYNDBG_GENERATION.load(Ordering::Acquire);
+            let slot = generation_slot(generation_before);
+            let enabled = self.enabled_slots[slot].load(Ordering::Relaxed);
+            let generation_after = DYNDBG_GENERATION.load(Ordering::Acquire);
+            if generation_before == generation_after {
+                return enabled;
+            }
+        }
     }
 }
 
