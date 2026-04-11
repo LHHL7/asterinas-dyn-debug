@@ -20,8 +20,8 @@ static LOGGER: AsterLogger = AsterLogger;
 // Dynamic debug state protected by a single lock so rule updates and descriptor
 // registrations are serialized.
 static DYNDBG_STATE: SpinLock<DyndbgState> = SpinLock::new(DyndbgState::new());
-// Active generation of `enabled_slots` used by the fast path.
-static DYNDBG_GENERATION: AtomicU64 = AtomicU64::new(0);
+// Even value means no update in progress; odd value means writer is updating.
+static DYNDBG_UPDATE_SEQ: AtomicU64 = AtomicU64::new(0);
 const DEFAULT_DEBUG_ENABLED: bool = false;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,12 +119,13 @@ impl DyndbgState {
         insert_index_entry(&mut self.line_index, descriptor.line, descriptor);
 
         let is_enabled = self.matches_descriptor(descriptor);
-        let generation = DYNDBG_GENERATION.load(Ordering::Acquire);
-        descriptor.init_enabled_slots(generation, is_enabled);
+        descriptor.init_enabled(is_enabled);
     }
 
     // 设置新规则时仅重算受影响的descriptor，降低规则更新成本。
     fn refresh_registered_descriptors(&mut self, affected: Vec<&'static DebugDescriptor>) {
+        self.begin_update();
+
         let mut seen = BTreeSet::new();
 
         //去重
@@ -134,12 +135,11 @@ impl DyndbgState {
             }
             //仅对受影响的descriptor进行裁决和更新enabled状态 避免全量更新的性能问题
             let enabled = self.matches_descriptor(descriptor);
-            //双槽写,这样在增量更新时不需要全量回填
-            descriptor.set_enabled_slots(enabled);
+            descriptor.set_enabled(enabled);
         }
 
-        // 规则更新提交点：发布新的generation，让读路径与本次规则更新对齐。
-        self.publish_generation();
+        // 规则更新提交点：结束seqlock写临界区后，读者将看到稳定快照。
+        self.end_update();
     }
 
     // 索引粗筛：挑出规则链可能影响到的descriptor并集。
@@ -213,17 +213,15 @@ impl DyndbgState {
         enabled
     }
 
-    fn publish_generation(&self) {
-        let current_generation = DYNDBG_GENERATION.load(Ordering::Relaxed);
-        let next_generation = current_generation.wrapping_add(1);
-        DYNDBG_GENERATION.store(next_generation, Ordering::Release);
+    #[inline]
+    fn begin_update(&self) {
+        DYNDBG_UPDATE_SEQ.fetch_add(1, Ordering::AcqRel);
     }
-}
 
-// 取generation的最低位作为当前使用的slot index，0或1
-#[inline]
-const fn generation_slot(generation: u64) -> usize {
-    (generation & 1) as usize
+    #[inline]
+    fn end_update(&self) {
+        DYNDBG_UPDATE_SEQ.fetch_add(1, Ordering::Release);
+    }
 }
 
 // 获取descriptor的唯一id，这里直接使用其地址作为id，因为每个descriptor都是一个静态变量，地址唯一
@@ -274,7 +272,7 @@ fn intersect_candidates(
 }
 
 pub struct DebugDescriptor {
-    enabled_slots: [AtomicBool; 2],
+    enabled: AtomicBool,
     registered: AtomicBool,
     file: &'static str,
     module_path: &'static str,
@@ -290,10 +288,7 @@ impl DebugDescriptor {
         line: u32,
     ) -> Self {
         Self {
-            enabled_slots: [
-                AtomicBool::new(DEFAULT_DEBUG_ENABLED),
-                AtomicBool::new(DEFAULT_DEBUG_ENABLED),
-            ],
+            enabled: AtomicBool::new(DEFAULT_DEBUG_ENABLED),
             registered: AtomicBool::new(false),
             file,
             module_path,
@@ -317,26 +312,25 @@ impl DebugDescriptor {
         state.register_descriptor(self);
     }
 
-    //初始化两个槽位
-    fn init_enabled_slots(&self, generation: u64, enabled: bool) {
-        let slot = generation_slot(generation);
-        self.enabled_slots[slot].store(enabled, Ordering::Relaxed);
-        self.enabled_slots[slot ^ 1].store(enabled, Ordering::Relaxed);
+    fn init_enabled(&self, enabled: bool) {
+        self.enabled.store(enabled, Ordering::Relaxed);
     }
 
-    // 同时写入双槽位，保证切换generation时不会读取到陈旧值。
-    fn set_enabled_slots(&self, enabled: bool) {
-        self.enabled_slots[0].store(enabled, Ordering::Relaxed);
-        self.enabled_slots[1].store(enabled, Ordering::Relaxed);
+    fn set_enabled(&self, enabled: bool) {
+        self.enabled.store(enabled, Ordering::Relaxed);
     }
 
     fn is_enabled(&self) -> bool {
         loop {
-            let generation_before = DYNDBG_GENERATION.load(Ordering::Acquire);
-            let slot = generation_slot(generation_before);
-            let enabled = self.enabled_slots[slot].load(Ordering::Relaxed);
-            let generation_after = DYNDBG_GENERATION.load(Ordering::Acquire);
-            if generation_before == generation_after {
+            let update_seq_before = DYNDBG_UPDATE_SEQ.load(Ordering::Acquire);
+            if (update_seq_before & 1) != 0 {
+                continue;
+            }
+
+            let enabled = self.enabled.load(Ordering::Relaxed);
+            let update_seq_after = DYNDBG_UPDATE_SEQ.load(Ordering::Acquire);
+
+            if update_seq_before == update_seq_after {
                 return enabled;
             }
         }
