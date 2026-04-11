@@ -123,36 +123,34 @@ impl DyndbgState {
         descriptor.init_enabled_slots(generation, is_enabled);
     }
 
-    //设置新规则时 更新descriptor
-    fn refresh_registered_descriptors(&mut self) {
-        //先根据新规则收集出新的enabled descriptor列表
-        let new_enabled = self.collect_enabled_descriptors();
-        //规则计算完成后，批量写入下一代slot并原子提交generation。
-        self.commit_enabled_generation(new_enabled);
-    }
+    // 设置新规则时仅重算受影响的descriptor，降低规则更新成本。
+    fn refresh_registered_descriptors(&mut self, affected: Vec<&'static DebugDescriptor>) {
+        let mut seen = BTreeSet::new();
 
-    // 规则精筛 最终匹配只认matches_descriptor
-    fn collect_enabled_descriptors(&self) -> Vec<&'static DebugDescriptor> {
-        //空规则时根据默认值决定是全开还是全关
-        if self.rules.is_empty() {
-            if DEFAULT_DEBUG_ENABLED {
-                return self.descriptors.clone();
+        //去重
+        for descriptor in affected {
+            if !seen.insert(descriptor_id(descriptor)) {
+                continue;
             }
-            return Vec::new();
+            //仅对受影响的descriptor进行裁决和更新enabled状态 避免全量更新的性能问题
+            let enabled = self.matches_descriptor(descriptor);
+            //双槽写,这样在增量更新时不需要全量回填
+            descriptor.set_enabled_slots(enabled);
         }
 
-        let mut candidates = self.collect_rule_candidates();
-        candidates.retain(|descriptor| self.matches_descriptor(descriptor));
-        candidates
+        // 规则更新提交点：发布新的generation，让读路径与本次规则更新对齐。
+        self.publish_generation();
     }
 
-    // 索引粗筛 挑出尽可能少的候选者供精筛使用，减少matches_descriptor的调用次数提升性能
-    // 获取所有规则候选集的并集
-    fn collect_rule_candidates(&self) -> Vec<&'static DebugDescriptor> {
+    // 索引粗筛：挑出规则链可能影响到的descriptor并集。
+    fn collect_candidates_for_rule_entries(
+        &self,
+        entries: &[DyndbgRuleEntry],
+    ) -> Vec<&'static DebugDescriptor> {
         let mut union = Vec::new();
         let mut seen = BTreeSet::new();
 
-        for entry in &self.rules {
+        for entry in entries {
             let matched = self.collect_candidates_for_rule(&entry.rule);
             for descriptor in matched {
                 let id = descriptor_id(descriptor);
@@ -215,21 +213,9 @@ impl DyndbgState {
         enabled
     }
 
-    fn commit_enabled_generation(&mut self, new_enabled: Vec<&'static DebugDescriptor>) {
-        let new_ids = new_enabled
-            .iter()
-            .map(|descriptor| descriptor_id(descriptor))
-            .collect::<BTreeSet<_>>();
+    fn publish_generation(&self) {
         let current_generation = DYNDBG_GENERATION.load(Ordering::Relaxed);
         let next_generation = current_generation.wrapping_add(1);
-        let next_slot = generation_slot(next_generation);
-
-        // 所有descriptor先写入下一代slot，最后一次性发布generation。
-        for descriptor in &self.descriptors {
-            let enabled = new_ids.contains(&descriptor_id(descriptor));
-            descriptor.set_enabled_slot(next_slot, enabled);
-        }
-
         DYNDBG_GENERATION.store(next_generation, Ordering::Release);
     }
 }
@@ -338,9 +324,10 @@ impl DebugDescriptor {
         self.enabled_slots[slot ^ 1].store(enabled, Ordering::Relaxed);
     }
 
-    //写入对应的槽位
-    fn set_enabled_slot(&self, slot: usize, enabled: bool) {
-        self.enabled_slots[slot].store(enabled, Ordering::Relaxed);
+    // 同时写入双槽位，保证切换generation时不会读取到陈旧值。
+    fn set_enabled_slots(&self, enabled: bool) {
+        self.enabled_slots[0].store(enabled, Ordering::Relaxed);
+        self.enabled_slots[1].store(enabled, Ordering::Relaxed);
     }
 
     fn is_enabled(&self) -> bool {
@@ -511,12 +498,20 @@ pub fn get_dyndbg_rule_snapshot() -> DyndbgRuleSnapshot {
 // 清空规则链，新设置一条规则
 pub fn set_dyndbg_rule(snapshot: DyndbgRuleSnapshot) {
     let mut state = DYNDBG_STATE.lock();
+    let old_rules = state.rules.clone();
+
     state.rules.clear();
-    state.rules.push(DyndbgRuleEntry {
+    let new_entry = DyndbgRuleEntry {
         rule: snapshot.into(),
         action: DyndbgRuleAction::Enable,
-    });
-    state.refresh_registered_descriptors();
+    };
+    state.rules.push(new_entry.clone());
+
+    let mut affected = state.collect_candidates_for_rule_entries(&old_rules);
+    affected.extend(state.collect_candidates_for_rule_entries(core::slice::from_ref(
+        &new_entry,
+    )));
+    state.refresh_registered_descriptors(affected);
 }
 
 //清空规则链
@@ -527,14 +522,15 @@ pub fn clear_dyndbg_rule() {
 // 向规则链追加规则
 pub fn append_dyndbg_rule(snapshot: DyndbgRuleSnapshot, enabled: bool) {
     let mut state = DYNDBG_STATE.lock();
-    state.rules.push(
-        DyndbgRuleEntrySnapshot {
-            rule: snapshot,
-            enabled,
-        }
-        .into(),
-    );
-    state.refresh_registered_descriptors();
+    let new_entry: DyndbgRuleEntry = DyndbgRuleEntrySnapshot {
+        rule: snapshot,
+        enabled,
+    }
+    .into();
+    let affected = state.collect_candidates_for_rule_entries(core::slice::from_ref(&new_entry));
+
+    state.rules.push(new_entry);
+    state.refresh_registered_descriptors(affected);
 }
 
 // 获取整个规则链快照
@@ -549,8 +545,10 @@ pub fn get_dyndbg_rule_chain_snapshot() -> Vec<DyndbgRuleEntrySnapshot> {
 
 pub fn clear_dyndbg_rules() {
     let mut state = DYNDBG_STATE.lock();
+    let old_rules = state.rules.clone();
     state.rules.clear();
-    state.refresh_registered_descriptors();
+    let affected = state.collect_candidates_for_rule_entries(&old_rules);
+    state.refresh_registered_descriptors(affected);
 }
 
 // 通过vec的id删除规则
@@ -560,8 +558,9 @@ pub fn remove_dyndbg_rule_by_id(rule_id: usize) -> bool {
         return false;
     }
 
-    state.rules.remove(rule_id);
-    state.refresh_registered_descriptors();
+    let removed_entry = state.rules.remove(rule_id);
+    let affected = state.collect_candidates_for_rule_entries(core::slice::from_ref(&removed_entry));
+    state.refresh_registered_descriptors(affected);
     true
 }
 
