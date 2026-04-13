@@ -11,6 +11,7 @@ use core::{
 };
 
 use log::{Metadata, Record};
+use linkme::distributed_slice;
 use ostd::{sync::SpinLock, timer::Jiffies};
 
 /// The logger used for Asterinas.
@@ -23,6 +24,10 @@ static DYNDBG_STATE: SpinLock<DyndbgState> = SpinLock::new(DyndbgState::new());
 // Even value means no update in progress; odd value means writer is updating.
 static DYNDBG_UPDATE_SEQ: AtomicU64 = AtomicU64::new(0);
 const DEFAULT_DEBUG_ENABLED: bool = false;
+
+//编译期收集的静态切片，init阶段完成注册操作 后续运行时无注册开销
+#[distributed_slice]
+pub static DYNDBG_DESCRIPTOR_REGISTRY: [&'static DebugDescriptor];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DyndbgRuleAction {
@@ -82,7 +87,6 @@ fn selector_match(selector: &Option<String>, value: Option<&str>) -> bool {
 
 struct DyndbgState {
     rules: Vec<DyndbgRuleEntry>,
-    descriptors: Vec<&'static DebugDescriptor>,
     file_index: BTreeMap<&'static str, Vec<&'static DebugDescriptor>>,
     module_index: BTreeMap<&'static str, Vec<&'static DebugDescriptor>>,
     function_index: BTreeMap<&'static str, Vec<&'static DebugDescriptor>>,
@@ -99,7 +103,6 @@ impl DyndbgState {
     const fn new() -> Self {
         Self {
             rules: Vec::new(),
-            descriptors: Vec::new(),
             file_index: BTreeMap::new(),
             module_index: BTreeMap::new(),
             function_index: BTreeMap::new(),
@@ -107,10 +110,9 @@ impl DyndbgState {
         }
     }
 
-    //注册descriptor时会将其插入到全局的descriptors列表和各个索引表中，
+    //注册descriptor时会将其插入到各个索引表中，
     //并根据rule链来设置初始enabled状态
     fn register_descriptor(&mut self, descriptor: &'static DebugDescriptor) {
-        self.descriptors.push(descriptor);
         insert_index_entry(&mut self.file_index, descriptor.file, descriptor);
         insert_index_entry(&mut self.module_index, descriptor.module_path, descriptor);
         if let Some(function) = descriptor.function {
@@ -147,6 +149,11 @@ impl DyndbgState {
         &self,
         entries: &[DyndbgRuleEntry],
     ) -> Vec<&'static DebugDescriptor> {
+        // If any selectorless rule exists, it can affect all descriptors.
+        if entries.iter().any(|entry| !entry.rule.has_any_selector()) {
+            return all_descriptors();
+        }
+
         let mut union = Vec::new();
         let mut seen = BTreeSet::new();
 
@@ -188,7 +195,7 @@ impl DyndbgState {
             intersect_candidates(&mut candidates, matched);
         }
 
-        candidates.unwrap_or_else(|| self.descriptors.clone())
+        candidates.unwrap_or_else(all_descriptors)
     }
 
     //最终的对单个描述符的裁决逻辑，所有rule过一遍，后面规则优先级高于前面规则
@@ -271,9 +278,12 @@ fn intersect_candidates(
     }
 }
 
+fn all_descriptors() -> Vec<&'static DebugDescriptor> {
+    DYNDBG_DESCRIPTOR_REGISTRY.to_vec()
+}
+
 pub struct DebugDescriptor {
     enabled: AtomicBool,
-    registered: AtomicBool,
     file: &'static str,
     module_path: &'static str,
     function: Option<&'static str>,
@@ -289,27 +299,11 @@ impl DebugDescriptor {
     ) -> Self {
         Self {
             enabled: AtomicBool::new(DEFAULT_DEBUG_ENABLED),
-            registered: AtomicBool::new(false),
             file,
             module_path,
             function,
             line,
         }
-    }
-
-    //descriptor首次注册时，根据全局rule来store其enabled状态，并插入全局vec中
-    //此时registered状态会被置为true，后续再次调用ensure_registered时会直接返回，保证不会重复注册
-    fn ensure_registered(&'static self) {
-        if self
-            .registered
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            return;
-        }
-
-        let mut state = DYNDBG_STATE.lock();
-        state.register_descriptor(self);
     }
 
     fn init_enabled(&self, enabled: bool) {
@@ -335,11 +329,27 @@ impl DebugDescriptor {
             }
         }
     }
+
+    #[inline]
+    fn fast_registered_disabled(&self) -> bool {
+        !self.enabled.load(Ordering::Acquire)
+    }
 }
 
 pub fn dyndbg_should_log(descriptor: &'static DebugDescriptor) -> bool {
-    descriptor.ensure_registered();
     descriptor.is_enabled()
+}
+
+fn pre_register_dyndbg_descriptors() {
+    let mut state = DYNDBG_STATE.lock();
+    for descriptor in DYNDBG_DESCRIPTOR_REGISTRY {
+        state.register_descriptor(descriptor);
+    }
+}
+
+#[inline]
+pub fn dyndbg_fast_disabled(descriptor: &'static DebugDescriptor) -> bool {
+    descriptor.fast_registered_disabled()
 }
 
 impl log::Log for AsterLogger {
@@ -568,7 +578,11 @@ macro_rules! dyndbg_debug {
             None,
             line!(),
         );
-        if $crate::dyndbg_should_log(&DESCRIPTOR) {
+        #[$crate::distributed_slice($crate::DYNDBG_DESCRIPTOR_REGISTRY)]
+        static DYNDBG_DESCRIPTOR_ENTRY: &'static $crate::DebugDescriptor = &DESCRIPTOR;
+        if !$crate::dyndbg_fast_disabled(&DESCRIPTOR)
+            && $crate::dyndbg_should_log(&DESCRIPTOR)
+        {
             log::debug!($($arg)+);
         }
     }};
@@ -583,12 +597,17 @@ macro_rules! dyndbg_debug_func {
             Some($func),
             line!(),
         );
-        if $crate::dyndbg_should_log(&DESCRIPTOR) {
+        #[$crate::distributed_slice($crate::DYNDBG_DESCRIPTOR_REGISTRY)]
+        static DYNDBG_DESCRIPTOR_ENTRY: &'static $crate::DebugDescriptor = &DESCRIPTOR;
+        if !$crate::dyndbg_fast_disabled(&DESCRIPTOR)
+            && $crate::dyndbg_should_log(&DESCRIPTOR)
+        {
             log::debug!($($arg)+);
         }
     }};
 }
 
 pub(super) fn init() {
+    pre_register_dyndbg_descriptors();
     ostd::logger::inject_logger(&LOGGER);
 }
