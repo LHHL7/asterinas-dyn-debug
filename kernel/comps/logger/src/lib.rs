@@ -22,8 +22,8 @@ mod aster_logger;
 mod console;
 //对外暴露接口 方便控制接口调用
 pub use aster_logger::{
-    append_dyndbg_rule, clear_dyndbg_rule, clear_dyndbg_rules, dyndbg_fast_disabled,
-    dyndbg_should_log, get_dyndbg_rule,
+    append_dyndbg_rule, clear_dyndbg_rule, clear_dyndbg_rules, dyndbg_should_log,
+    get_dyndbg_rule,
     get_dyndbg_rule_chain_snapshot, get_dyndbg_rule_snapshot, remove_dyndbg_rule_by_id,
     set_dyndbg_rule, update_dyndbg_rule, DebugDescriptor, DYNDBG_DESCRIPTOR_REGISTRY,
     DyndbgRuleEntrySnapshot,

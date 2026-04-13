@@ -6,7 +6,7 @@ use alloc::{
     vec::Vec,
 };
 use core::{
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
 
@@ -21,8 +21,6 @@ static LOGGER: AsterLogger = AsterLogger;
 // Dynamic debug state protected by a single lock so rule updates and descriptor
 // registrations are serialized.
 static DYNDBG_STATE: SpinLock<DyndbgState> = SpinLock::new(DyndbgState::new());
-// Even value means no update in progress; odd value means writer is updating.
-static DYNDBG_UPDATE_SEQ: AtomicU64 = AtomicU64::new(0);
 const DEFAULT_DEBUG_ENABLED: bool = false;
 
 //编译期收集的静态切片，init阶段完成注册操作 后续运行时无注册开销
@@ -126,8 +124,6 @@ impl DyndbgState {
 
     // 设置新规则时仅重算受影响的descriptor，降低规则更新成本。
     fn refresh_registered_descriptors(&mut self, affected: Vec<&'static DebugDescriptor>) {
-        self.begin_update();
-
         let mut seen = BTreeSet::new();
 
         //去重
@@ -139,9 +135,6 @@ impl DyndbgState {
             let enabled = self.matches_descriptor(descriptor);
             descriptor.set_enabled(enabled);
         }
-
-        // 规则更新提交点：结束seqlock写临界区后，读者将看到稳定快照。
-        self.end_update();
     }
 
     // 索引粗筛：挑出规则链可能影响到的descriptor并集。
@@ -218,16 +211,6 @@ impl DyndbgState {
             }
         }
         enabled
-    }
-
-    #[inline]
-    fn begin_update(&self) {
-        DYNDBG_UPDATE_SEQ.fetch_add(1, Ordering::AcqRel);
-    }
-
-    #[inline]
-    fn end_update(&self) {
-        DYNDBG_UPDATE_SEQ.fetch_add(1, Ordering::Release);
     }
 }
 
@@ -311,33 +294,17 @@ impl DebugDescriptor {
     }
 
     fn set_enabled(&self, enabled: bool) {
-        self.enabled.store(enabled, Ordering::Relaxed);
-    }
-
-    fn is_enabled(&self) -> bool {
-        loop {
-            let update_seq_before = DYNDBG_UPDATE_SEQ.load(Ordering::Acquire);
-            if (update_seq_before & 1) != 0 {
-                continue;
-            }
-
-            let enabled = self.enabled.load(Ordering::Relaxed);
-            let update_seq_after = DYNDBG_UPDATE_SEQ.load(Ordering::Acquire);
-
-            if update_seq_before == update_seq_after {
-                return enabled;
-            }
-        }
+        self.enabled.store(enabled, Ordering::Release);
     }
 
     #[inline]
-    fn fast_registered_disabled(&self) -> bool {
-        !self.enabled.load(Ordering::Acquire)
+    fn should_log_fast(&self) -> bool {
+        self.enabled.load(Ordering::Acquire)
     }
 }
 
 pub fn dyndbg_should_log(descriptor: &'static DebugDescriptor) -> bool {
-    descriptor.is_enabled()
+    descriptor.should_log_fast()
 }
 
 fn pre_register_dyndbg_descriptors() {
@@ -345,11 +312,6 @@ fn pre_register_dyndbg_descriptors() {
     for descriptor in DYNDBG_DESCRIPTOR_REGISTRY {
         state.register_descriptor(descriptor);
     }
-}
-
-#[inline]
-pub fn dyndbg_fast_disabled(descriptor: &'static DebugDescriptor) -> bool {
-    descriptor.fast_registered_disabled()
 }
 
 impl log::Log for AsterLogger {
@@ -580,9 +542,7 @@ macro_rules! dyndbg_debug {
         );
         #[$crate::distributed_slice($crate::DYNDBG_DESCRIPTOR_REGISTRY)]
         static DYNDBG_DESCRIPTOR_ENTRY: &'static $crate::DebugDescriptor = &DESCRIPTOR;
-        if !$crate::dyndbg_fast_disabled(&DESCRIPTOR)
-            && $crate::dyndbg_should_log(&DESCRIPTOR)
-        {
+        if $crate::dyndbg_should_log(&DESCRIPTOR) {
             log::debug!($($arg)+);
         }
     }};
@@ -599,9 +559,7 @@ macro_rules! dyndbg_debug_func {
         );
         #[$crate::distributed_slice($crate::DYNDBG_DESCRIPTOR_REGISTRY)]
         static DYNDBG_DESCRIPTOR_ENTRY: &'static $crate::DebugDescriptor = &DESCRIPTOR;
-        if !$crate::dyndbg_fast_disabled(&DESCRIPTOR)
-            && $crate::dyndbg_should_log(&DESCRIPTOR)
-        {
+        if $crate::dyndbg_should_log(&DESCRIPTOR) {
             log::debug!($($arg)+);
         }
     }};
