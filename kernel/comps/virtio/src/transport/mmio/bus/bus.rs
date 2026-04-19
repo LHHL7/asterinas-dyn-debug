@@ -4,7 +4,8 @@
 
 use alloc::{collections::VecDeque, fmt::Debug, sync::Arc, vec::Vec};
 
-use log::{debug, error};
+use aster_logger::dyndbg_debug as debug;
+use log::error;
 use ostd::bus::BusProbeError;
 
 use super::common_device::MmioCommonDevice;

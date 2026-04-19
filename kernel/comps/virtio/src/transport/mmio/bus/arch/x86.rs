@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use log::debug;
+use aster_logger::dyndbg_debug as debug;
 use ostd::arch::irq::IRQ_CHIP;
 pub(super) use ostd::arch::irq::MappedIrqLine;
 

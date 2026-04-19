@@ -149,8 +149,10 @@ version = "0.1.0"
 dependencies = [
  "aster-cmdline",
  "aster-input",
+ "aster-logger",
  "bitflags 2.9.1",
  "component",
+ "linkme",
  "log",
  "ostd",
  "spin",
@@ -160,9 +162,11 @@ dependencies = [
 name = "aster-input"
 version = "0.1.0"
 dependencies = [
+ "aster-logger",
  "bitflags 1.3.2",
  "bitvec",
  "component",
+ "linkme",
  "log",
  "ostd",
  "ostd-pod",
@@ -213,6 +217,7 @@ dependencies = [
  "keyable-arc",
  "lending-iterator",
  "libflate",
+ "linkme",
  "log",
  "logo-ascii-art",
  "loongArch64",
@@ -253,6 +258,7 @@ version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "aster-block",
+ "aster-logger",
  "bittle",
  "component",
  "ctr",
@@ -260,6 +266,7 @@ dependencies = [
  "hashbrown 0.14.5",
  "inherit-methods-macro",
  "lending-iterator",
+ "linkme",
  "log",
  "lru",
  "ostd",
@@ -288,10 +295,12 @@ name = "aster-pci"
 version = "0.1.0"
 dependencies = [
  "align_ext",
+ "aster-logger",
  "bitflags 1.3.2",
  "cfg-if",
  "component",
  "fdt",
+ "linkme",
  "log",
  "ostd",
  "spin",
@@ -387,6 +396,7 @@ dependencies = [
  "aster-block",
  "aster-console",
  "aster-input",
+ "aster-logger",
  "aster-network",
  "aster-pci",
  "aster-rights",
@@ -398,6 +408,7 @@ dependencies = [
  "device-id",
  "id-alloc",
  "int-to-c-enum",
+ "linkme",
  "log",
  "ostd",
  "ostd-pod",

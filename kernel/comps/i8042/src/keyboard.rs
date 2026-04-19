@@ -180,7 +180,7 @@ fn handle_keyboard_input(_trap_frame: &TrapFrame) {
             registered_device.submit_events(&events);
         }
     } else {
-        log::debug!(
+        aster_logger::dyndbg_debug!(
             "PS/2 keyboard unmapped scancode {:?} dropped",
             scancode_event.scancode
         );

@@ -19,8 +19,9 @@ use aster_block::{
     request_queue::{BioRequest, BioRequestSingleQueue},
 };
 use aster_util::mem_obj_slice::Slice;
+use aster_logger::dyndbg_debug as debug;
 use device_id::{DeviceId, MinorId};
-use log::{debug, info};
+use log::info;
 use ostd::{
     arch::trap::TrapFrame,
     mm::{HasSize, VmIo, dma::DmaStream},

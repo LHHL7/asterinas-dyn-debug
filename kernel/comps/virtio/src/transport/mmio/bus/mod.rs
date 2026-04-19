@@ -4,8 +4,8 @@
 
 use core::ops::Range;
 
+use aster_logger::dyndbg_debug as debug;
 use bus::MmioBus;
-use log::debug;
 use ostd::{io::IoMem, irq::IrqLine, sync::SpinLock};
 
 use crate::transport::mmio::bus::common_device::{

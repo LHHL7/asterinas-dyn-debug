@@ -300,7 +300,7 @@ impl RegisteredInputDevice {
 
         let handlers = self.handlers.read();
         if handlers.is_empty() {
-            log::debug!(
+            aster_logger::dyndbg_debug!(
                 "Input: dropped events from device {} because it has no handlers",
                 self.device.name()
             );

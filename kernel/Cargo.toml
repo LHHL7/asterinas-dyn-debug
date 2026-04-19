@@ -47,6 +47,7 @@ lending-iterator.workspace = true
 libflate.workspace = true
 log.workspace = true
 logo-ascii-art.workspace = true
+linkme.workspace = true
 lru.workspace = true
 osdk-frame-allocator.workspace = true
 osdk-heap-allocator.workspace = true

@@ -8,12 +8,14 @@ edition.workspace = true
 [dependencies]
 aes-gcm.workspace = true
 aster-block.workspace = true
+aster-logger.workspace = true
 bittle.workspace = true
 component.workspace = true
 ctr.workspace = true
 device-id.workspace = true
 hashbrown.workspace = true
 inherit-methods-macro.workspace = true
+linkme.workspace = true
 lending-iterator.workspace = true
 lru.workspace = true
 log.workspace = true

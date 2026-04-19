@@ -16,8 +16,9 @@ use aster_input::{
     },
 };
 use aster_util::{field_ptr, safe_ptr::SafePtr};
+use aster_logger::dyndbg_debug as debug;
 use bitflags::bitflags;
-use log::{debug, info};
+use log::info;
 use ostd::{
     arch::trap::TrapFrame,
     io::IoMem,

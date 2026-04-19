@@ -50,18 +50,6 @@ impl DyndbgRule {
             || self.line.is_some()
     }
 
-    // 判断记录是否匹配规则
-    fn matches_record(&self, record: &Record) -> bool {
-        if !self.has_any_selector() {
-            return true;
-        }
-
-        selector_match(&self.file_keyword, record.file())
-            && selector_match(&self.module_keyword, record.module_path())
-            && selector_match(&self.function_keyword, None)
-            && self.line.is_none_or(|line| record.line() == Some(line))
-    }
-
     // 判断描述符是否匹配规则
     fn matches_descriptor(&self, descriptor: &DebugDescriptor) -> bool {
         if !self.has_any_selector() {
@@ -202,16 +190,6 @@ impl DyndbgState {
         enabled
     }
 
-    // 兼容旧的record-based接口
-    fn matches_record(&self, record: &Record) -> bool {
-        let mut enabled = DEFAULT_DEBUG_ENABLED;
-        for entry in &self.rules {
-            if entry.rule.matches_record(record) {
-                enabled = entry.action == DyndbgRuleAction::Enable;
-            }
-        }
-        enabled
-    }
 }
 
 // 获取descriptor的唯一id，这里直接使用其地址作为id，因为每个descriptor都是一个静态变量，地址唯一
@@ -320,11 +298,6 @@ impl log::Log for AsterLogger {
     }
 
     fn log(&self, record: &Record) {
-        // For legacy `log::debug!` callsites, keep record-based matching.
-        if record.level() == log::Level::Debug && !dyndbg_match_record(record) {
-            return;
-        }
-
         let timestamp = Jiffies::elapsed().as_duration();
         print_logs(record, &timestamp);
     }
@@ -368,11 +341,6 @@ fn print_logs(record: &Record, timestamp: &Duration) {
         record.level(),
         record.args()
     ));
-}
-
-fn dyndbg_match_record(record: &Record) -> bool {
-    let state = DYNDBG_STATE.lock();
-    state.matches_record(record)
 }
 
 // 对外暴露快照 外部通过快照来查看和设置规则，避免直接暴露内部的Rule结构，减少耦合

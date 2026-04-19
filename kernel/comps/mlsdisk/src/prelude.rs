@@ -12,4 +12,5 @@ pub(crate) type Result<T> = core::result::Result<T, Error>;
 
 pub(crate) use core::fmt::{self, Debug};
 
-pub(crate) use log::{debug, error, info, trace, warn};
+pub(crate) use aster_logger::dyndbg_debug as debug;
+pub(crate) use log::{error, info, trace, warn};

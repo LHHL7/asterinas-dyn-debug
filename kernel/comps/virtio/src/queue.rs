@@ -11,7 +11,7 @@ use core::{
 use aster_rights::{Dup, TRightSet, TRights, Write};
 use aster_util::{field_ptr, safe_ptr::SafePtr};
 use bitflags::bitflags;
-use log::debug;
+use aster_logger::dyndbg_debug as debug;
 use ostd::mm::{HasPaddr, PodOnce, Split, dma::DmaCoherent};
 
 use crate::{

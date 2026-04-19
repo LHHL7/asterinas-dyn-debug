@@ -8,8 +8,10 @@ edition.workspace = true
 [dependencies]
 aster-cmdline.workspace = true
 aster-input.workspace = true
+aster-logger.workspace = true
 bitflags = "2.5"
 component.workspace = true
+linkme.workspace = true
 ostd.workspace = true
 log.workspace = true
 spin.workspace = true

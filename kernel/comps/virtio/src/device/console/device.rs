@@ -5,7 +5,7 @@ use core::hint::spin_loop;
 
 use aster_console::{AnyConsoleDevice, ConsoleCallback};
 use aster_util::mem_obj_slice::Slice;
-use log::debug;
+use aster_logger::dyndbg_debug as debug;
 use ostd::{
     arch::trap::TrapFrame,
     mm::{VmReader, dma::DmaStream, io::util::HasVmReaderWriter},
