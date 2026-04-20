@@ -58,7 +58,7 @@ impl DyndbgRule {
 
         selector_match(&self.file_keyword, Some(descriptor.file))
             && selector_match(&self.module_keyword, Some(descriptor.module_path))
-            && selector_match(&self.function_keyword, descriptor.function)
+            && selector_match(&self.function_keyword, descriptor.function_name())
             && self.line.is_none_or(|line| descriptor.line == line)
     }
 }
@@ -101,7 +101,7 @@ impl DyndbgState {
     fn register_descriptor(&mut self, descriptor: &'static DebugDescriptor) {
         insert_index_entry(&mut self.file_index, descriptor.file, descriptor);
         insert_index_entry(&mut self.module_index, descriptor.module_path, descriptor);
-        if let Some(function) = descriptor.function {
+        if let Some(function) = descriptor.function_name() {
             insert_index_entry(&mut self.function_index, function, descriptor);
         }
         insert_index_entry(&mut self.line_index, descriptor.line, descriptor);
@@ -247,7 +247,7 @@ pub struct DebugDescriptor {
     enabled: AtomicBool,
     file: &'static str,
     module_path: &'static str,
-    function: Option<&'static str>,
+    function: Option<fn() -> &'static str>,
     line: u32,
 }
 
@@ -255,7 +255,7 @@ impl DebugDescriptor {
     pub const fn new(
         file: &'static str,
         module_path: &'static str,
-        function: Option<&'static str>,
+        function: Option<fn() -> &'static str>,
         line: u32,
     ) -> Self {
         Self {
@@ -278,6 +278,11 @@ impl DebugDescriptor {
     #[inline]
     fn should_log_fast(&self) -> bool {
         self.enabled.load(Ordering::Acquire)
+    }
+
+    #[inline]
+    fn function_name(&self) -> Option<&'static str> {
+        self.function.map(|provider| provider())
     }
 }
 
@@ -502,10 +507,18 @@ pub fn remove_dyndbg_rule_by_id(rule_id: usize) -> bool {
 #[macro_export]
 macro_rules! dyndbg_debug {
     ($($arg:tt)+) => {{
+        // 获取当前函数完整名称（包含模块路径）
+        fn __dyndbg_function_name() -> &'static str {
+            fn __dyndbg_fn_marker() {}
+            let type_name = core::any::type_name_of_val(&__dyndbg_fn_marker);
+            type_name
+                .strip_suffix("::__dyndbg_fn_marker")
+                .unwrap_or(type_name)
+        }
         static DESCRIPTOR: $crate::DebugDescriptor = $crate::DebugDescriptor::new(
             file!(),
             module_path!(),
-            None,
+            Some(__dyndbg_function_name),
             line!(),
         );
         #[$crate::distributed_slice($crate::DYNDBG_DESCRIPTOR_REGISTRY)]
@@ -515,14 +528,17 @@ macro_rules! dyndbg_debug {
         }
     }};
 }
-//引入新宏 其静态变量需要function name作为参数传入 其针对调试函数的场景(后续看看能否与dyndbg_debug宏合并)
+// 手动指定函数名的覆盖宏，用于需要自定义函数标签的场景。
 #[macro_export]
 macro_rules! dyndbg_debug_func {
     ($func:expr, $($arg:tt)+) => {{
+        fn __dyndbg_function_name() -> &'static str {
+            $func
+        }
         static DESCRIPTOR: $crate::DebugDescriptor = $crate::DebugDescriptor::new(
             file!(),
             module_path!(),
-            Some($func),
+            Some(__dyndbg_function_name),
             line!(),
         );
         #[$crate::distributed_slice($crate::DYNDBG_DESCRIPTOR_REGISTRY)]
