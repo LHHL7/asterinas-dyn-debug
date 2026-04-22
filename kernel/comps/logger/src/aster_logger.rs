@@ -6,7 +6,7 @@ use alloc::{
     vec::Vec,
 };
 use core::{
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, Ordering},
     time::Duration,
 };
 
@@ -22,6 +22,12 @@ static LOGGER: AsterLogger = AsterLogger;
 // registrations are serialized.
 static DYNDBG_STATE: SpinLock<DyndbgState> = SpinLock::new(DyndbgState::new());
 const DEFAULT_DEBUG_ENABLED: bool = false;
+const MODULE_GATE_BUCKETS: usize = 1024;
+
+// Fast gates used on the hot path. Updates happen under DYNDBG_STATE lock, while
+// reads are lock-free in dyndbg_should_log().
+static MODULE_ENABLED_COUNTS: [AtomicU32; MODULE_GATE_BUCKETS] =
+    [const { AtomicU32::new(0) }; MODULE_GATE_BUCKETS];
 
 //编译期收集的静态切片，init阶段完成注册操作 后续运行时无注册开销
 #[distributed_slice]
@@ -97,7 +103,7 @@ impl DyndbgState {
     }
 
     //注册descriptor时会将其插入到各个索引表中，
-    //并根据rule链来设置初始enabled状态
+    //并根据rule链来设置初始enabled状态和桶计数器
     fn register_descriptor(&mut self, descriptor: &'static DebugDescriptor) {
         insert_index_entry(&mut self.file_index, descriptor.file, descriptor);
         insert_index_entry(&mut self.module_index, descriptor.module_path, descriptor);
@@ -108,6 +114,7 @@ impl DyndbgState {
 
         let is_enabled = self.matches_descriptor(descriptor);
         descriptor.init_enabled(is_enabled);
+        apply_enabled_transition(descriptor.module_gate_bucket, false, is_enabled);
     }
 
     // 设置新规则时仅重算受影响的descriptor，降低规则更新成本。
@@ -121,7 +128,8 @@ impl DyndbgState {
             }
             //仅对受影响的descriptor进行裁决和更新enabled状态 避免全量更新的性能问题
             let enabled = self.matches_descriptor(descriptor);
-            descriptor.set_enabled(enabled);
+            let old_enabled = descriptor.swap_enabled(enabled);
+            apply_enabled_transition(descriptor.module_gate_bucket, old_enabled, enabled);
         }
     }
 
@@ -243,10 +251,68 @@ fn all_descriptors() -> Vec<&'static DebugDescriptor> {
     DYNDBG_DESCRIPTOR_REGISTRY.to_vec()
 }
 
+// 根据哈希值得到桶编号
+#[inline]
+const fn module_gate_bucket(module_path: &str) -> usize {
+    (fnv1a_hash(module_path.as_bytes()) as usize) & (MODULE_GATE_BUCKETS - 1)
+}
+
+// 计算哈希值
+const fn fnv1a_hash(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    let mut index = 0;
+    while index < bytes.len() {
+        hash ^= bytes[index] as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+        index += 1;
+    }
+    hash
+}
+
+// 根据descriptor新旧状态同步更新桶计数器
+#[inline]
+fn apply_enabled_transition(module_bucket: usize, old_enabled: bool, new_enabled: bool) {
+    // 状态无变化直接返回
+    if old_enabled == new_enabled {
+        return;
+    }
+    // 新状态启用的话 计数器加一 否则减一(不减到0以下)
+    if new_enabled {
+        MODULE_ENABLED_COUNTS[module_bucket].fetch_add(1, Ordering::Release);
+    } else {
+        saturating_fetch_sub_u32(&MODULE_ENABLED_COUNTS[module_bucket]);
+    }
+}
+
+// 安全的原子减法
+fn saturating_fetch_sub_u32(counter: &AtomicU32) {
+    let mut current = counter.load(Ordering::Relaxed);
+    loop {
+        if current == 0 {
+            return;
+        }
+        match counter.compare_exchange_weak(
+            current,
+            current - 1,
+            Ordering::Release,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => return,
+            Err(actual) => current = actual,
+        }
+    }
+}
+
+#[inline]
+fn module_bucket_enabled(bucket: usize) -> bool {
+    MODULE_ENABLED_COUNTS[bucket].load(Ordering::Acquire) != 0
+}
+
 pub struct DebugDescriptor {
     enabled: AtomicBool,
     file: &'static str,
     module_path: &'static str,
+    module_gate_bucket: usize,
     function: Option<fn() -> &'static str>,
     line: u32,
 }
@@ -262,6 +328,7 @@ impl DebugDescriptor {
             enabled: AtomicBool::new(DEFAULT_DEBUG_ENABLED),
             file,
             module_path,
+            module_gate_bucket: module_gate_bucket(module_path),
             function,
             line,
         }
@@ -271,8 +338,8 @@ impl DebugDescriptor {
         self.enabled.store(enabled, Ordering::Relaxed);
     }
 
-    fn set_enabled(&self, enabled: bool) {
-        self.enabled.store(enabled, Ordering::Release);
+    fn swap_enabled(&self, enabled: bool) -> bool {
+        self.enabled.swap(enabled, Ordering::AcqRel)
     }
 
     #[inline]
@@ -287,6 +354,10 @@ impl DebugDescriptor {
 }
 
 pub fn dyndbg_should_log(descriptor: &'static DebugDescriptor) -> bool {
+    if !module_bucket_enabled(descriptor.module_gate_bucket) {
+        return false;
+    }
+
     descriptor.should_log_fast()
 }
 
