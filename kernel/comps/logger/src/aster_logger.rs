@@ -22,12 +22,26 @@ static LOGGER: AsterLogger = AsterLogger;
 // registrations are serialized.
 static DYNDBG_STATE: SpinLock<DyndbgState> = SpinLock::new(DyndbgState::new());
 const DEFAULT_DEBUG_ENABLED: bool = false;
-const MODULE_GATE_BUCKETS: usize = 1024;
+const MAX_DYNDBG_MODULES: usize = 8192;
+// 安全设计 当模块id分配用尽时，后续descriptor将被分配到UNASSIGNED_MODULE_ID上，默认禁用。
+const UNASSIGNED_MODULE_ID: u32 = u32::MAX;
 
 // Fast gates used on the hot path. Updates happen under DYNDBG_STATE lock, while
 // reads are lock-free in dyndbg_should_log().
-static MODULE_ENABLED_COUNTS: [AtomicU32; MODULE_GATE_BUCKETS] =
-    [const { AtomicU32::new(0) }; MODULE_GATE_BUCKETS];
+static MODULE_STATES: [ModuleState; MAX_DYNDBG_MODULES] =
+    [const { ModuleState::new() }; MAX_DYNDBG_MODULES];
+
+struct ModuleState {
+    enabled_count: AtomicU32,
+}
+
+impl ModuleState {
+    const fn new() -> Self {
+        Self {
+            enabled_count: AtomicU32::new(0),
+        }
+    }
+}
 
 //编译期收集的静态切片，init阶段完成注册操作 后续运行时无注册开销
 #[distributed_slice]
@@ -79,6 +93,7 @@ fn selector_match(selector: &Option<String>, value: Option<&str>) -> bool {
 
 struct DyndbgState {
     rules: Vec<DyndbgRuleEntry>,
+    module_id_by_path: BTreeMap<&'static str, u32>,
     file_index: BTreeMap<&'static str, Vec<&'static DebugDescriptor>>,
     module_index: BTreeMap<&'static str, Vec<&'static DebugDescriptor>>,
     function_index: BTreeMap<&'static str, Vec<&'static DebugDescriptor>>,
@@ -95,6 +110,7 @@ impl DyndbgState {
     const fn new() -> Self {
         Self {
             rules: Vec::new(),
+            module_id_by_path: BTreeMap::new(),
             file_index: BTreeMap::new(),
             module_index: BTreeMap::new(),
             function_index: BTreeMap::new(),
@@ -103,7 +119,7 @@ impl DyndbgState {
     }
 
     //注册descriptor时会将其插入到各个索引表中，
-    //并根据rule链来设置初始enabled状态和桶计数器
+    //并根据rule链来设置初始enabled状态和模块计数器
     fn register_descriptor(&mut self, descriptor: &'static DebugDescriptor) {
         insert_index_entry(&mut self.file_index, descriptor.file, descriptor);
         insert_index_entry(&mut self.module_index, descriptor.module_path, descriptor);
@@ -112,9 +128,12 @@ impl DyndbgState {
         }
         insert_index_entry(&mut self.line_index, descriptor.line, descriptor);
 
+        let module_id = self.allocate_module_id(descriptor.module_path);
+        descriptor.init_module_id(module_id);
+
         let is_enabled = self.matches_descriptor(descriptor);
         descriptor.init_enabled(is_enabled);
-        apply_enabled_transition(descriptor.module_gate_bucket, false, is_enabled);
+        apply_enabled_transition(module_id, false, is_enabled);
     }
 
     // 设置新规则时仅重算受影响的descriptor，降低规则更新成本。
@@ -129,8 +148,25 @@ impl DyndbgState {
             //仅对受影响的descriptor进行裁决和更新enabled状态 避免全量更新的性能问题
             let enabled = self.matches_descriptor(descriptor);
             let old_enabled = descriptor.swap_enabled(enabled);
-            apply_enabled_transition(descriptor.module_gate_bucket, old_enabled, enabled);
+            apply_enabled_transition(descriptor.module_id(), old_enabled, enabled);
         }
+    }
+
+    // 为模块路径分配稳定且无冲突的模块ID。
+    fn allocate_module_id(&mut self, module_path: &'static str) -> u32 {
+        // 已存在 → 直接返回
+        if let Some(module_id) = self.module_id_by_path.get(module_path) {
+            return *module_id;
+        }
+
+        let next_id = self.module_id_by_path.len();
+        if next_id >= MAX_DYNDBG_MODULES {
+            return UNASSIGNED_MODULE_ID;
+        }
+        //写入新模块ID到映射表
+        let module_id = next_id as u32;
+        self.module_id_by_path.insert(module_path, module_id);
+        module_id
     }
 
     // 索引粗筛：挑出规则链可能影响到的descriptor并集。
@@ -251,36 +287,22 @@ fn all_descriptors() -> Vec<&'static DebugDescriptor> {
     DYNDBG_DESCRIPTOR_REGISTRY.to_vec()
 }
 
-// 根据哈希值得到桶编号
+// 根据descriptor新旧状态同步更新模块计数器
 #[inline]
-const fn module_gate_bucket(module_path: &str) -> usize {
-    (fnv1a_hash(module_path.as_bytes()) as usize) & (MODULE_GATE_BUCKETS - 1)
-}
-
-// 计算哈希值
-const fn fnv1a_hash(bytes: &[u8]) -> u64 {
-    let mut hash = 0xcbf29ce484222325u64;
-    let mut index = 0;
-    while index < bytes.len() {
-        hash ^= bytes[index] as u64;
-        hash = hash.wrapping_mul(0x100000001b3);
-        index += 1;
-    }
-    hash
-}
-
-// 根据descriptor新旧状态同步更新桶计数器
-#[inline]
-fn apply_enabled_transition(module_bucket: usize, old_enabled: bool, new_enabled: bool) {
+fn apply_enabled_transition(module_id: u32, old_enabled: bool, new_enabled: bool) {
     // 状态无变化直接返回
     if old_enabled == new_enabled {
         return;
     }
+    // id无效直接返回
+    let Some(module_state) = module_state(module_id) else {
+        return;
+    };
     // 新状态启用的话 计数器加一 否则减一(不减到0以下)
     if new_enabled {
-        MODULE_ENABLED_COUNTS[module_bucket].fetch_add(1, Ordering::Release);
+        module_state.enabled_count.fetch_add(1, Ordering::Release);
     } else {
-        saturating_fetch_sub_u32(&MODULE_ENABLED_COUNTS[module_bucket]);
+        saturating_fetch_sub_u32(&module_state.enabled_count);
     }
 }
 
@@ -304,15 +326,23 @@ fn saturating_fetch_sub_u32(counter: &AtomicU32) {
 }
 
 #[inline]
-fn module_bucket_enabled(bucket: usize) -> bool {
-    MODULE_ENABLED_COUNTS[bucket].load(Ordering::Acquire) != 0
+fn module_state(module_id: u32) -> Option<&'static ModuleState> {
+    if module_id == UNASSIGNED_MODULE_ID {
+        return None;
+    }
+    MODULE_STATES.get(module_id as usize)
+}
+
+#[inline]
+fn module_enabled(module_id: u32) -> bool {
+    module_state(module_id).is_some_and(|state| state.enabled_count.load(Ordering::Acquire) != 0)
 }
 
 pub struct DebugDescriptor {
     enabled: AtomicBool,
     file: &'static str,
     module_path: &'static str,
-    module_gate_bucket: usize,
+    module_id: AtomicU32,
     function: Option<fn() -> &'static str>,
     line: u32,
 }
@@ -328,7 +358,7 @@ impl DebugDescriptor {
             enabled: AtomicBool::new(DEFAULT_DEBUG_ENABLED),
             file,
             module_path,
-            module_gate_bucket: module_gate_bucket(module_path),
+            module_id: AtomicU32::new(UNASSIGNED_MODULE_ID),
             function,
             line,
         }
@@ -336,6 +366,14 @@ impl DebugDescriptor {
 
     fn init_enabled(&self, enabled: bool) {
         self.enabled.store(enabled, Ordering::Relaxed);
+    }
+
+    fn init_module_id(&self, module_id: u32) {
+        self.module_id.store(module_id, Ordering::Relaxed);
+    }
+
+    fn module_id(&self) -> u32 {
+        self.module_id.load(Ordering::Acquire)
     }
 
     fn swap_enabled(&self, enabled: bool) -> bool {
@@ -354,7 +392,7 @@ impl DebugDescriptor {
 }
 
 pub fn dyndbg_should_log(descriptor: &'static DebugDescriptor) -> bool {
-    if !module_bucket_enabled(descriptor.module_gate_bucket) {
+    if !module_enabled(descriptor.module_id()) {
         return false;
     }
 
