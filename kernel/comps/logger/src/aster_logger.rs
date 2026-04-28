@@ -43,9 +43,48 @@ impl ModuleState {
     }
 }
 
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy)]
+struct PatchSite {
+    instruction_address: usize,
+    metadata: PatchSiteMetadata,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy)]
+struct PatchSiteMetadata {
+    jump_target: usize,
+    descriptor_address: usize,
+}
+
+struct ModuleKey {
+    enabled: bool,
+    patch_sites: Vec<PatchSite>,
+}
+
+impl ModuleKey {
+    fn new() -> Self {
+        Self {
+            enabled: false,
+            patch_sites: Vec::new(),
+        }
+    }
+}
+
 //编译期收集的静态切片，init阶段完成注册操作 后续运行时无注册开销
 #[distributed_slice]
 pub static DYNDBG_DESCRIPTOR_REGISTRY: [&'static DebugDescriptor];
+
+#[distributed_slice]
+pub static DYNDBG_PATCH_SITE_REGISTRY: [&'static DyndbgPatchSiteRegistration];
+
+// 现在注册patchsite信息需要site和target
+#[derive(Debug, Clone, Copy)]
+pub struct DyndbgPatchSiteRegistration {
+    pub descriptor: &'static DebugDescriptor,
+    pub instruction_site: unsafe extern "C" fn() -> bool,
+    pub jump_target: extern "C" fn() -> bool,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DyndbgRuleAction {
@@ -94,6 +133,7 @@ fn selector_match(selector: &Option<String>, value: Option<&str>) -> bool {
 struct DyndbgState {
     rules: Vec<DyndbgRuleEntry>,
     module_id_by_path: BTreeMap<&'static str, u32>,
+    module_keys: BTreeMap<u32, ModuleKey>,
     file_index: BTreeMap<&'static str, Vec<&'static DebugDescriptor>>,
     module_index: BTreeMap<&'static str, Vec<&'static DebugDescriptor>>,
     function_index: BTreeMap<&'static str, Vec<&'static DebugDescriptor>>,
@@ -111,6 +151,7 @@ impl DyndbgState {
         Self {
             rules: Vec::new(),
             module_id_by_path: BTreeMap::new(),
+            module_keys: BTreeMap::new(),
             file_index: BTreeMap::new(),
             module_index: BTreeMap::new(),
             function_index: BTreeMap::new(),
@@ -118,8 +159,7 @@ impl DyndbgState {
         }
     }
 
-    //注册descriptor时会将其插入到各个索引表中，
-    //并根据rule链来设置初始enabled状态和模块计数器
+    //注册descriptor时会将其插入到各个索引表中，初始化module id
     fn register_descriptor(&mut self, descriptor: &'static DebugDescriptor) {
         insert_index_entry(&mut self.file_index, descriptor.file, descriptor);
         insert_index_entry(&mut self.module_index, descriptor.module_path, descriptor);
@@ -130,15 +170,52 @@ impl DyndbgState {
 
         let module_id = self.allocate_module_id(descriptor.module_path);
         descriptor.init_module_id(module_id);
-
+        // 初始时空规则链 默认禁用所有descriptor，避免冗余判断和触发状态迁移逻辑。
+        if self.rules.is_empty() {
+            descriptor.init_enabled(DEFAULT_DEBUG_ENABLED);
+            return;
+        }
+        //若初始有rule链 根据rule链来设置初始enabled状态和判断是否迁移
         let is_enabled = self.matches_descriptor(descriptor);
         descriptor.init_enabled(is_enabled);
-        apply_enabled_transition(module_id, false, is_enabled);
+        if is_enabled {
+            self.apply_enabled_transition(module_id, false, true);
+        }
+    }
+
+    //把编译期收集的信息存入module key
+    fn register_patch_site_registration(&mut self, registration: &'static DyndbgPatchSiteRegistration) {
+        let module_id = registration.descriptor.module_id();
+        if module_id == UNASSIGNED_MODULE_ID {
+            return;
+        }
+
+        // 构造patchsite
+        let instruction_address = registration.instruction_site as usize;
+        let jump_target = registration.jump_target as usize;
+        let patch_site = PatchSite {
+            instruction_address,
+            metadata: PatchSiteMetadata {
+                jump_target,
+                descriptor_address: descriptor_id(registration.descriptor),
+            },
+        };
+
+        // 存入module key里
+        let current_enabled = module_enabled(module_id);
+        let module_key = self.module_keys.entry(module_id).or_insert_with(ModuleKey::new);
+        module_key.enabled = current_enabled;
+        module_key.patch_sites.push(patch_site);
+
+        if current_enabled {
+            patch_module_sites(module_key, true);
+        }
     }
 
     // 设置新规则时仅重算受影响的descriptor，降低规则更新成本。
     fn refresh_registered_descriptors(&mut self, affected: Vec<&'static DebugDescriptor>) {
         let mut seen = BTreeSet::new();
+        let mut module_deltas = BTreeMap::<u32, i64>::new();
 
         //去重
         for descriptor in affected {
@@ -148,7 +225,23 @@ impl DyndbgState {
             //仅对受影响的descriptor进行裁决和更新enabled状态 避免全量更新的性能问题
             let enabled = self.matches_descriptor(descriptor);
             let old_enabled = descriptor.swap_enabled(enabled);
-            apply_enabled_transition(descriptor.module_id(), old_enabled, enabled);
+            if old_enabled == enabled {
+                continue;
+            }
+
+            let module_id = descriptor.module_id();
+            if module_state(module_id).is_none() {
+                continue;
+            }
+
+            // 暂存descriptor变化
+            let delta = if enabled { 1 } else { -1 };
+            *module_deltas.entry(module_id).or_insert(0) += delta;
+        }
+
+        // 应用模块级的变化，触发必要的指令修补。
+        for (module_id, delta) in module_deltas {
+            self.apply_module_delta(module_id, delta);
         }
     }
 
@@ -167,6 +260,86 @@ impl DyndbgState {
         let module_id = next_id as u32;
         self.module_id_by_path.insert(module_path, module_id);
         module_id
+    }
+
+    // descriptor级别状态变化时的处理逻辑，更新模块计数器并在模块状态迁移时触发指令修补。
+    fn apply_enabled_transition(&mut self, module_id: u32, old_enabled: bool, new_enabled: bool) {
+        // 状态无变化直接返回
+        if old_enabled == new_enabled {
+            return;
+        }
+
+        // id无效直接返回
+        let Some(module_state) = module_state(module_id) else {
+            return;
+        };
+
+        let was_enabled = module_state.enabled_count.load(Ordering::Relaxed) != 0;
+
+        // 新状态启用的话 计数器加一 否则减一(不减到0以下)
+        if new_enabled {
+            module_state.enabled_count.fetch_add(1, Ordering::Release);
+        } else {
+            saturating_fetch_sub_u32(&module_state.enabled_count);
+        }
+
+        let is_enabled = module_state.enabled_count.load(Ordering::Acquire) != 0;
+        if was_enabled != is_enabled {
+            self.on_module_state_transition(module_id, is_enabled);
+        }
+    }
+
+    // 模块状态迁移时的处理逻辑，主要是进行指令修补。
+    fn on_module_state_transition(&mut self, module_id: u32, enabled: bool) {
+        let Some(module_key) = self.module_keys.get_mut(&module_id) else {
+            return;
+        };
+        // 若模块状态没变 返回
+        if module_key.enabled == enabled {
+            return;
+        }
+        // 若模块状态迁移 则要指令修补
+        module_key.enabled = enabled;
+        patch_module_sites(module_key, enabled);
+    }
+
+    // 应用模块级的变化，触发必要的指令修补。
+    fn apply_module_delta(&mut self, module_id: u32, delta: i64) {
+        if delta == 0 {
+            return;
+        }
+
+        // 拿计数器
+        let Some(module_state) = module_state(module_id) else {
+            return;
+        };
+
+        // 模块级更新计数器
+        let was_enabled = module_state.enabled_count.load(Ordering::Relaxed) != 0;
+
+        if delta > 0 {
+            let delta_u64 = delta as u64;
+            let amount = if delta_u64 > u32::MAX as u64 {
+                u32::MAX
+            } else {
+                delta_u64 as u32
+            };
+            module_state.enabled_count.fetch_add(amount, Ordering::Release);
+        } else {
+            let amount_u64 = delta.unsigned_abs();
+            let amount = if amount_u64 > u32::MAX as u64 {
+                u32::MAX
+            } else {
+                amount_u64 as u32
+            };
+            saturating_fetch_sub_n_u32(&module_state.enabled_count, amount);
+        }
+
+        // 根据计数器新状态来判断是否需要修补
+        let is_enabled = module_state.enabled_count.load(Ordering::Acquire) != 0;
+        if was_enabled != is_enabled {
+            self.on_module_state_transition(module_id, is_enabled);
+        }
     }
 
     // 索引粗筛：挑出规则链可能影响到的descriptor并集。
@@ -287,24 +460,59 @@ fn all_descriptors() -> Vec<&'static DebugDescriptor> {
     DYNDBG_DESCRIPTOR_REGISTRY.to_vec()
 }
 
-// 根据descriptor新旧状态同步更新模块计数器
-#[inline]
-fn apply_enabled_transition(module_id: u32, old_enabled: bool, new_enabled: bool) {
-    // 状态无变化直接返回
-    if old_enabled == new_enabled {
-        return;
-    }
-    // id无效直接返回
-    let Some(module_state) = module_state(module_id) else {
-        return;
-    };
-    // 新状态启用的话 计数器加一 否则减一(不减到0以下)
-    if new_enabled {
-        module_state.enabled_count.fetch_add(1, Ordering::Release);
-    } else {
-        saturating_fetch_sub_u32(&module_state.enabled_count);
+// 模块级别的指令修补
+#[cfg(target_arch = "x86_64")]
+fn patch_module_sites(module_key: &ModuleKey, enabled: bool) {
+    use ostd::arch::static_patch::patch_5byte_slot;
+
+    for site in &module_key.patch_sites {
+        patch_single_site(site, enabled, patch_5byte_slot);
     }
 }
+
+// 对单个site进行修补
+#[cfg(target_arch = "x86_64")]
+fn patch_single_site(
+    site: &PatchSite,
+    enabled: bool,
+    patch_fn: fn(
+        usize,
+        ostd::arch::static_patch::PatchInstruction,
+    ) -> Result<(), ostd::arch::static_patch::PatchError>,
+) {
+    // 0是占位符，还没填充真实地址 则跳过
+    if site.instruction_address == 0 {
+        return;
+    }
+
+    // 生成要修补的指令。
+    let instruction = if enabled {
+        if site.metadata.jump_target == 0 {
+            return;
+        }
+        ostd::arch::static_patch::PatchInstruction::JmpRel32 {
+            target: site.metadata.jump_target,
+        }
+    } else {
+        ostd::arch::static_patch::PatchInstruction::Nop5
+    };
+
+    // patch_fn 即函数指针 指向patch_5byte_slot
+    if let Err(error) = patch_fn(site.instruction_address, instruction) {
+        log::warn!(
+            "dyndbg static patch failed: module_enabled={}, site=0x{:x}, target=0x{:x}, descriptor=0x{:x}, error={:?}",
+            enabled,
+            site.instruction_address,
+            site.metadata.jump_target,
+            site.metadata.descriptor_address,
+            error
+        );
+    }
+}
+
+// 非x86架构暂未实现，提供空实现  
+#[cfg(not(target_arch = "x86_64"))]
+fn patch_module_sites(_module_key: &ModuleKey, _enabled: bool) {}
 
 // 安全的原子减法
 fn saturating_fetch_sub_u32(counter: &AtomicU32) {
@@ -325,6 +533,26 @@ fn saturating_fetch_sub_u32(counter: &AtomicU32) {
     }
 }
 
+// 安全的原子减法  处理一次性减amount
+fn saturating_fetch_sub_n_u32(counter: &AtomicU32, amount: u32) {
+    if amount == 0 {
+        return;
+    }
+
+    let mut current = counter.load(Ordering::Relaxed);
+    loop {
+        if current == 0 {
+            return;
+        }
+
+        let next = current.saturating_sub(amount);
+        match counter.compare_exchange_weak(current, next, Ordering::Release, Ordering::Relaxed) {
+            Ok(_) => return,
+            Err(actual) => current = actual,
+        }
+    }
+}
+
 #[inline]
 fn module_state(module_id: u32) -> Option<&'static ModuleState> {
     if module_id == UNASSIGNED_MODULE_ID {
@@ -338,6 +566,7 @@ fn module_enabled(module_id: u32) -> bool {
     module_state(module_id).is_some_and(|state| state.enabled_count.load(Ordering::Acquire) != 0)
 }
 
+#[derive(Debug)]
 pub struct DebugDescriptor {
     enabled: AtomicBool,
     file: &'static str,
@@ -403,6 +632,13 @@ fn pre_register_dyndbg_descriptors() {
     let mut state = DYNDBG_STATE.lock();
     for descriptor in DYNDBG_DESCRIPTOR_REGISTRY {
         state.register_descriptor(descriptor);
+    }
+}
+
+fn pre_register_dyndbg_patch_sites() {
+    let mut state = DYNDBG_STATE.lock();
+    for registration in DYNDBG_PATCH_SITE_REGISTRY {
+        state.register_patch_site_registration(registration);
     }
 }
 
@@ -632,8 +868,37 @@ macro_rules! dyndbg_debug {
         );
         #[$crate::distributed_slice($crate::DYNDBG_DESCRIPTOR_REGISTRY)]
         static DYNDBG_DESCRIPTOR_ENTRY: &'static $crate::DebugDescriptor = &DESCRIPTOR;
-        if $crate::dyndbg_should_log(&DESCRIPTOR) {
-            log::debug!($($arg)+);
+        #[cfg(target_arch = "x86_64")]
+        {
+            // jmp处：原子读慢路径
+            extern "C" fn __dyndbg_enabled() -> bool {
+                $crate::dyndbg_should_log(&DESCRIPTOR)
+            }
+            // 编译期生成patch site信息
+            static DYNDBG_PATCH_SITE: $crate::DyndbgPatchSiteRegistration =
+                $crate::DyndbgPatchSiteRegistration {
+                    descriptor: &DESCRIPTOR,
+                    // 由文件名和泛型值（行号列号）唯一标识一个call site
+                    instruction_site: ostd::arch::static_patch::dyndbg_patch_site_stub::<
+                        { line!() },
+                        { column!() },
+                    >,
+                    jump_target: __dyndbg_enabled,
+                };
+            // 收集到全局分布式切片里，init阶段完成注册 后续运行时无注册开销
+            #[$crate::distributed_slice($crate::DYNDBG_PATCH_SITE_REGISTRY)]
+            static DYNDBG_PATCH_SITE_ENTRY: &'static $crate::DyndbgPatchSiteRegistration =
+                &DYNDBG_PATCH_SITE;
+            // 真正路径
+            if ostd::arch::static_patch::dyndbg_patch_site::<{ line!() }, { column!() }>() {
+                log::debug!($($arg)+);
+            }
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            if $crate::dyndbg_should_log(&DESCRIPTOR) {
+                log::debug!($($arg)+);
+            }
         }
     }};
 }
@@ -652,13 +917,38 @@ macro_rules! dyndbg_debug_func {
         );
         #[$crate::distributed_slice($crate::DYNDBG_DESCRIPTOR_REGISTRY)]
         static DYNDBG_DESCRIPTOR_ENTRY: &'static $crate::DebugDescriptor = &DESCRIPTOR;
-        if $crate::dyndbg_should_log(&DESCRIPTOR) {
-            log::debug!($($arg)+);
+        #[cfg(target_arch = "x86_64")]
+        {
+            extern "C" fn __dyndbg_enabled() -> bool {
+                $crate::dyndbg_should_log(&DESCRIPTOR)
+            }
+            static DYNDBG_PATCH_SITE: $crate::DyndbgPatchSiteRegistration =
+                $crate::DyndbgPatchSiteRegistration {
+                    descriptor: &DESCRIPTOR,
+                    instruction_site: ostd::arch::static_patch::dyndbg_patch_site_stub::<
+                        { line!() },
+                        { column!() },
+                    >,
+                    jump_target: __dyndbg_enabled,
+                };
+            #[$crate::distributed_slice($crate::DYNDBG_PATCH_SITE_REGISTRY)]
+            static DYNDBG_PATCH_SITE_ENTRY: &'static $crate::DyndbgPatchSiteRegistration =
+                &DYNDBG_PATCH_SITE;
+            if ostd::arch::static_patch::dyndbg_patch_site::<{ line!() }, { column!() }>() {
+                log::debug!($($arg)+);
+            }
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            if $crate::dyndbg_should_log(&DESCRIPTOR) {
+                log::debug!($($arg)+);
+            }
         }
     }};
 }
 
 pub(super) fn init() {
     pre_register_dyndbg_descriptors();
+    pre_register_dyndbg_patch_sites();
     ostd::logger::inject_logger(&LOGGER);
 }

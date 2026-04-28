@@ -26,6 +26,7 @@ pub use aster_logger::{
     get_dyndbg_rule,
     get_dyndbg_rule_chain_snapshot, get_dyndbg_rule_snapshot, remove_dyndbg_rule_by_id,
     set_dyndbg_rule, update_dyndbg_rule, DebugDescriptor, DYNDBG_DESCRIPTOR_REGISTRY,
+    DYNDBG_PATCH_SITE_REGISTRY, DyndbgPatchSiteRegistration,
     DyndbgRuleEntrySnapshot,
     DyndbgRuleSnapshot,
 };

@@ -12,6 +12,7 @@ pub mod kernel;
 pub(crate) mod mm;
 mod power;
 pub mod serial;
+pub mod static_patch;
 pub(crate) mod task;
 mod timer;
 pub mod trap;
