@@ -83,7 +83,7 @@ pub static DYNDBG_PATCH_SITE_REGISTRY: [&'static DyndbgPatchSiteRegistration];
 pub struct DyndbgPatchSiteRegistration {
     pub descriptor: &'static DebugDescriptor,
     pub instruction_site: unsafe extern "C" fn() -> bool,
-    pub jump_target: extern "C" fn() -> bool,
+    pub jump_target: unsafe extern "C" fn() -> bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -870,29 +870,98 @@ macro_rules! dyndbg_debug {
         static DYNDBG_DESCRIPTOR_ENTRY: &'static $crate::DebugDescriptor = &DESCRIPTOR;
         #[cfg(target_arch = "x86_64")]
         {
-            // jmp处：原子读慢路径
-            extern "C" fn __dyndbg_enabled() -> bool {
-                $crate::dyndbg_should_log(&DESCRIPTOR)
+            // 调用点静态补丁槽：NOP5 <-> JMP debug path。
+            #[allow(unsafe_code)]
+            unsafe {
+                // SAFETY: The inline asm emits an exact 5-byte patch slot at the
+                // call-site and declares a possible branch target used only by
+                // static patching. The label block is normal Rust code and falls
+                // through to the original execution path.
+                core::arch::asm!(
+                    concat!(
+                        ".globl \"__dyndbg_site_",
+                        module_path!(),
+                        "_",
+                        line!(),
+                        "_",
+                        column!(),
+                        "\"\n",
+                        "\"__dyndbg_site_",
+                        module_path!(),
+                        "_",
+                        line!(),
+                        "_",
+                        column!(),
+                        "\":\n",
+                        ".byte 0x0f, 0x1f, 0x44, 0x00, 0x00\n",
+                        ".if 0\n",
+                        "jmp {0}\n",
+                        ".endif\n",
+                    ),
+                    label {
+                        #[allow(unsafe_code)]
+                        unsafe {
+                            // SAFETY: This only defines a global symbol at the
+                            // debug block entry for patching targets.
+                            core::arch::asm!(
+                                concat!(
+                                    ".globl \"__dyndbg_target_",
+                                    module_path!(),
+                                    "_",
+                                    line!(),
+                                    "_",
+                                    column!(),
+                                    "\"\n",
+                                    "\"__dyndbg_target_",
+                                    module_path!(),
+                                    "_",
+                                    line!(),
+                                    "_",
+                                    column!(),
+                                    "\":\n",
+                                ),
+                                options(nomem, nostack)
+                            );
+                        }
+                        if $crate::dyndbg_should_log(&DESCRIPTOR) {
+                            log::debug!($($arg)+);
+                        }
+                    },
+                    options(nomem, nostack, preserves_flags)
+                );
+            }
+
+            unsafe extern "C" {
+                #[link_name = concat!(
+                    "__dyndbg_site_",
+                    module_path!(),
+                    "_",
+                    line!(),
+                    "_",
+                    column!()
+                )]
+                fn __dyndbg_site() -> bool;
+                #[link_name = concat!(
+                    "__dyndbg_target_",
+                    module_path!(),
+                    "_",
+                    line!(),
+                    "_",
+                    column!()
+                )]
+                fn __dyndbg_target() -> bool;
             }
             // 编译期生成patch site信息
             static DYNDBG_PATCH_SITE: $crate::DyndbgPatchSiteRegistration =
                 $crate::DyndbgPatchSiteRegistration {
                     descriptor: &DESCRIPTOR,
-                    // 由文件名和泛型值（行号列号）唯一标识一个call site
-                    instruction_site: ostd::arch::static_patch::dyndbg_patch_site_stub::<
-                        { line!() },
-                        { column!() },
-                    >,
-                    jump_target: __dyndbg_enabled,
+                    instruction_site: __dyndbg_site,
+                    jump_target: __dyndbg_target,
                 };
             // 收集到全局分布式切片里，init阶段完成注册 后续运行时无注册开销
             #[$crate::distributed_slice($crate::DYNDBG_PATCH_SITE_REGISTRY)]
             static DYNDBG_PATCH_SITE_ENTRY: &'static $crate::DyndbgPatchSiteRegistration =
                 &DYNDBG_PATCH_SITE;
-            // 真正路径
-            if ostd::arch::static_patch::dyndbg_patch_site::<{ line!() }, { column!() }>() {
-                log::debug!($($arg)+);
-            }
         }
         #[cfg(not(target_arch = "x86_64"))]
         {
@@ -919,24 +988,96 @@ macro_rules! dyndbg_debug_func {
         static DYNDBG_DESCRIPTOR_ENTRY: &'static $crate::DebugDescriptor = &DESCRIPTOR;
         #[cfg(target_arch = "x86_64")]
         {
-            extern "C" fn __dyndbg_enabled() -> bool {
-                $crate::dyndbg_should_log(&DESCRIPTOR)
+            #[allow(unsafe_code)]
+            unsafe {
+                // SAFETY: The inline asm emits an exact 5-byte patch slot at the
+                // call-site and declares a possible branch target used only by
+                // static patching. The label block is normal Rust code and falls
+                // through to the original execution path.
+                core::arch::asm!(
+                    concat!(
+                        ".globl \"__dyndbg_site_",
+                        module_path!(),
+                        "_",
+                        line!(),
+                        "_",
+                        column!(),
+                        "\"\n",
+                        "\"__dyndbg_site_",
+                        module_path!(),
+                        "_",
+                        line!(),
+                        "_",
+                        column!(),
+                        "\":\n",
+                        ".byte 0x0f, 0x1f, 0x44, 0x00, 0x00\n",
+                        ".if 0\n",
+                        "jmp {0}\n",
+                        ".endif\n",
+                    ),
+                    label {
+                        #[allow(unsafe_code)]
+                        unsafe {
+                            // SAFETY: This only defines a global symbol at the
+                            // debug block entry for patching targets.
+                            core::arch::asm!(
+                                concat!(
+                                    ".globl \"__dyndbg_target_",
+                                    module_path!(),
+                                    "_",
+                                    line!(),
+                                    "_",
+                                    column!(),
+                                    "\"\n",
+                                    "\"__dyndbg_target_",
+                                    module_path!(),
+                                    "_",
+                                    line!(),
+                                    "_",
+                                    column!(),
+                                    "\":\n",
+                                ),
+                                options(nomem, nostack)
+                            );
+                        }
+                        if $crate::dyndbg_should_log(&DESCRIPTOR) {
+                            log::debug!($($arg)+);
+                        }
+                    },
+                    options(nomem, nostack, preserves_flags)
+                );
             }
+
+            unsafe extern "C" {
+                #[link_name = concat!(
+                    "__dyndbg_site_",
+                    module_path!(),
+                    "_",
+                    line!(),
+                    "_",
+                    column!()
+                )]
+                fn __dyndbg_site() -> bool;
+                #[link_name = concat!(
+                    "__dyndbg_target_",
+                    module_path!(),
+                    "_",
+                    line!(),
+                    "_",
+                    column!()
+                )]
+                fn __dyndbg_target() -> bool;
+            }
+
             static DYNDBG_PATCH_SITE: $crate::DyndbgPatchSiteRegistration =
                 $crate::DyndbgPatchSiteRegistration {
                     descriptor: &DESCRIPTOR,
-                    instruction_site: ostd::arch::static_patch::dyndbg_patch_site_stub::<
-                        { line!() },
-                        { column!() },
-                    >,
-                    jump_target: __dyndbg_enabled,
+                    instruction_site: __dyndbg_site,
+                    jump_target: __dyndbg_target,
                 };
             #[$crate::distributed_slice($crate::DYNDBG_PATCH_SITE_REGISTRY)]
             static DYNDBG_PATCH_SITE_ENTRY: &'static $crate::DyndbgPatchSiteRegistration =
                 &DYNDBG_PATCH_SITE;
-            if ostd::arch::static_patch::dyndbg_patch_site::<{ line!() }, { column!() }>() {
-                log::debug!($($arg)+);
-            }
         }
         #[cfg(not(target_arch = "x86_64"))]
         {
