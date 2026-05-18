@@ -463,48 +463,42 @@ fn all_descriptors() -> Vec<&'static DebugDescriptor> {
 // 模块级别的指令修补
 #[cfg(target_arch = "x86_64")]
 fn patch_module_sites(module_key: &ModuleKey, enabled: bool) {
-    use ostd::arch::static_patch::patch_5byte_slot;
+    use ostd::arch::static_patch::{patch_5byte_slots, PatchInstruction, PatchRequest};
 
+    let mut requests = Vec::new();
     for site in &module_key.patch_sites {
-        patch_single_site(site, enabled, patch_5byte_slot);
-    }
-}
+        // 0是占位符，还没填充真实地址 则跳过
+        if site.instruction_address == 0 {
+            continue;
+        }
 
-// 对单个site进行修补
-#[cfg(target_arch = "x86_64")]
-fn patch_single_site(
-    site: &PatchSite,
-    enabled: bool,
-    patch_fn: fn(
-        usize,
-        ostd::arch::static_patch::PatchInstruction,
-    ) -> Result<(), ostd::arch::static_patch::PatchError>,
-) {
-    // 0是占位符，还没填充真实地址 则跳过
-    if site.instruction_address == 0 {
+        // 生成要修补的指令。
+        let instruction = if enabled {
+            if site.metadata.jump_target == 0 {
+                continue;
+            }
+            PatchInstruction::JmpRel32 {
+                target: site.metadata.jump_target,
+            }
+        } else {
+            PatchInstruction::Nop5
+        };
+
+        requests.push(PatchRequest {
+            instruction_address: site.instruction_address,
+            instruction,
+        });
+    }
+
+    if requests.is_empty() {
         return;
     }
 
-    // 生成要修补的指令。
-    let instruction = if enabled {
-        if site.metadata.jump_target == 0 {
-            return;
-        }
-        ostd::arch::static_patch::PatchInstruction::JmpRel32 {
-            target: site.metadata.jump_target,
-        }
-    } else {
-        ostd::arch::static_patch::PatchInstruction::Nop5
-    };
-
-    // patch_fn 即函数指针 指向patch_5byte_slot
-    if let Err(error) = patch_fn(site.instruction_address, instruction) {
+    if let Err(error) = patch_5byte_slots(&requests) {
         log::warn!(
-            "dyndbg static patch failed: module_enabled={}, site=0x{:x}, target=0x{:x}, descriptor=0x{:x}, error={:?}",
+            "dyndbg batch patch failed: module_enabled={}, sites={}, error={:?}",
             enabled,
-            site.instruction_address,
-            site.metadata.jump_target,
-            site.metadata.descriptor_address,
+            requests.len(),
             error
         );
     }

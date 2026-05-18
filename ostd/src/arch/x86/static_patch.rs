@@ -32,6 +32,15 @@ pub enum PatchInstruction {
     },
 }
 
+/// A single patch request within a batch transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PatchRequest {
+    /// Address of the 5-byte instruction slot to patch.
+    pub instruction_address: usize,
+    /// Instruction to write into the patch slot.
+    pub instruction: PatchInstruction,
+}
+
 /// Errors returned by mini static patch operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PatchError {
@@ -110,12 +119,39 @@ pub fn dyndbg_patch_site<const LINE: u32, const COLUMN: u32>() -> bool {
 /// used for addresses that are known to refer to a writable executable kernel
 /// text slot prepared for this purpose.
 pub fn patch_5byte_slot(site_address: usize, instruction: PatchInstruction) -> Result<(), PatchError> {
-    if site_address == 0 {
-        return Err(PatchError::InvalidSiteAddress);
+    let request = PatchRequest {
+        instruction_address: site_address,
+        instruction,
+    };
+    patch_5byte_slots(core::slice::from_ref(&request))
+}
+
+/// Patches multiple 5-byte slots as one transaction.
+///
+/// This function defines the patch transaction boundary. The current
+/// implementation still writes each site sequentially, but the orchestration
+/// (SMP rendezvous, text sync, serialization) runs only once for the whole
+/// batch so it can be upgraded to a true SMP-safe transaction later.
+pub fn patch_5byte_slots(requests: &[PatchRequest]) -> Result<(), PatchError> {
+    if requests.is_empty() {
+        return Ok(());
     }
 
-    let bytes = encode_instruction(site_address, instruction)?;
+    validate_patch_requests(requests)?;
+    apply_patch_transaction(requests)
+}
 
+fn validate_patch_requests(requests: &[PatchRequest]) -> Result<(), PatchError> {
+    for request in requests {
+        if request.instruction_address == 0 {
+            return Err(PatchError::InvalidSiteAddress);
+        }
+        let _ = encode_instruction(request.instruction_address, request.instruction)?;
+    }
+    Ok(())
+}
+
+fn apply_patch_transaction(requests: &[PatchRequest]) -> Result<(), PatchError> {
     let _patch_guard = PATCH_LOCK.lock();
 
     let mut target_count = 0usize;
@@ -155,7 +191,10 @@ pub fn patch_5byte_slot(site_address: usize, instruction: PatchInstruction) -> R
         // 这里的guard会在作用域结束时自动恢复中断和写保护状态
         let _irq_guard = irq::disable_local();
         let _wp_guard = WriteProtectGuard::disable();
-        write_bytes(site_address, &bytes);
+        for request in requests {
+            let bytes = encode_instruction(request.instruction_address, request.instruction)?;
+            write_bytes(request.instruction_address, &bytes);
+        }
     }
 
     // Serialize after patching to avoid stale fetch windows on local CPU.
