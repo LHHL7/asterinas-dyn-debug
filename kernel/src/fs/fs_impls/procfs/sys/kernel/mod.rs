@@ -10,6 +10,7 @@ use crate::{
             ProcDir,
             sys::kernel::{
                 cap_last_cap::CapLastCapFileOps, dynamic_debug::DynamicDebugFileOps,
+                dyndbg_bench::DyndbgBenchFileOps, dyndbg_stats::DyndbgStatsFileOps,
                 pid_max::PidMaxFileOps, yama::YamaDirOps,
             },
             template::{
@@ -23,6 +24,8 @@ use crate::{
 
 mod cap_last_cap;
 mod dynamic_debug;
+mod dyndbg_bench;
+mod dyndbg_stats;
 mod pid_max;
 mod yama;
 
@@ -43,6 +46,8 @@ impl KernelDirOps {
     const STATIC_ENTRIES: &'static [(&'static str, fn(Weak<dyn Inode>) -> Arc<dyn Inode>)] = &[
         ("cap_last_cap", CapLastCapFileOps::new_inode),
         ("dynamic_debug", DynamicDebugFileOps::new_inode),
+        ("dyndbg_bench", DyndbgBenchFileOps::new_inode),
+        ("dyndbg_stats", DyndbgStatsFileOps::new_inode),
         ("pid_max", PidMaxFileOps::new_inode),
         ("yama", YamaDirOps::new_inode),
     ];

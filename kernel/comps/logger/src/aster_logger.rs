@@ -6,7 +6,7 @@ use alloc::{
     vec::Vec,
 };
 use core::{
-    sync::atomic::{AtomicBool, AtomicU32, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     time::Duration,
 };
 
@@ -31,8 +31,19 @@ const UNASSIGNED_MODULE_ID: u32 = u32::MAX;
 static MODULE_STATES: [ModuleState; MAX_DYNDBG_MODULES] =
     [const { ModuleState::new() }; MAX_DYNDBG_MODULES];
 
+static DYNDBG_DESCRIPTORS_RECOMPUTED: AtomicU64 = AtomicU64::new(0);
+static DYNDBG_MODULES_REPATCHED: AtomicU64 = AtomicU64::new(0);
+static DYNDBG_SITES_PATCHED: AtomicU64 = AtomicU64::new(0);
+
 struct ModuleState {
     enabled_count: AtomicU32,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct DyndbgStatsSnapshot {
+    pub descriptors_recomputed: u64,
+    pub modules_repatched: u64,
+    pub sites_patched: u64,
 }
 
 impl ModuleState {
@@ -222,6 +233,7 @@ impl DyndbgState {
             if !seen.insert(descriptor_id(descriptor)) {
                 continue;
             }
+            DYNDBG_DESCRIPTORS_RECOMPUTED.fetch_add(1, Ordering::Relaxed);
             //仅对受影响的descriptor进行裁决和更新enabled状态 避免全量更新的性能问题
             let enabled = self.matches_descriptor(descriptor);
             let old_enabled = descriptor.swap_enabled(enabled);
@@ -493,6 +505,9 @@ fn patch_module_sites(module_key: &ModuleKey, enabled: bool) {
     if requests.is_empty() {
         return;
     }
+
+    DYNDBG_MODULES_REPATCHED.fetch_add(1, Ordering::Relaxed);
+    DYNDBG_SITES_PATCHED.fetch_add(requests.len() as u64, Ordering::Relaxed);
 
     if let Err(error) = patch_5byte_slots(&requests) {
         log::warn!(
@@ -771,6 +786,20 @@ pub fn get_dyndbg_rule_snapshot() -> DyndbgRuleSnapshot {
         .last()
         .map(|entry| DyndbgRuleSnapshot::from(&entry.rule))
         .unwrap_or_default()
+}
+
+pub fn get_dyndbg_stats_snapshot() -> DyndbgStatsSnapshot {
+    DyndbgStatsSnapshot {
+        descriptors_recomputed: DYNDBG_DESCRIPTORS_RECOMPUTED.load(Ordering::Relaxed),
+        modules_repatched: DYNDBG_MODULES_REPATCHED.load(Ordering::Relaxed),
+        sites_patched: DYNDBG_SITES_PATCHED.load(Ordering::Relaxed),
+    }
+}
+
+pub fn reset_dyndbg_stats() {
+    DYNDBG_DESCRIPTORS_RECOMPUTED.store(0, Ordering::Relaxed);
+    DYNDBG_MODULES_REPATCHED.store(0, Ordering::Relaxed);
+    DYNDBG_SITES_PATCHED.store(0, Ordering::Relaxed);
 }
 
 // 清空规则链，新设置一条规则
