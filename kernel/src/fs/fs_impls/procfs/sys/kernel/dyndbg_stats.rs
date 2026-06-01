@@ -37,6 +37,7 @@ impl FileOps for DyndbgStatsFileOps {
         )?;
         writeln!(printer, "modules_repatched={}", stats.modules_repatched)?;
         writeln!(printer, "sites_patched={}", stats.sites_patched)?;
+        writeln!(printer, "patch_transactions={}", stats.patch_transactions)?;
         writeln!(printer, "usage: reset")?;
 
         Ok(printer.bytes_written())

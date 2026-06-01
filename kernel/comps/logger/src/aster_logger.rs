@@ -6,7 +6,7 @@ use alloc::{
     vec::Vec,
 };
 use core::{
-    sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering},
     time::Duration,
 };
 
@@ -34,16 +34,42 @@ static MODULE_STATES: [ModuleState; MAX_DYNDBG_MODULES] =
 static DYNDBG_DESCRIPTORS_RECOMPUTED: AtomicU64 = AtomicU64::new(0);
 static DYNDBG_MODULES_REPATCHED: AtomicU64 = AtomicU64::new(0);
 static DYNDBG_SITES_PATCHED: AtomicU64 = AtomicU64::new(0);
+static DYNDBG_PATCH_TRANSACTIONS: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DyndbgPatchBackend {
+    PerSite = 0,
+    Batch = 1,
+}
+
+static DYNDBG_PATCH_BACKEND: AtomicU8 = AtomicU8::new(DyndbgPatchBackend::Batch as u8);
+
+impl DyndbgPatchBackend {
+    fn from_u8(value: u8) -> Self {
+        match value {
+            0 => Self::PerSite,
+            _ => Self::Batch,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PerSite => "per_site",
+            Self::Batch => "batch",
+        }
+    }
+}
+
+pub fn set_dyndbg_patch_backend(backend: DyndbgPatchBackend) {
+    DYNDBG_PATCH_BACKEND.store(backend as u8, Ordering::Relaxed);
+}
+
+pub fn get_dyndbg_patch_backend() -> DyndbgPatchBackend {
+    DyndbgPatchBackend::from_u8(DYNDBG_PATCH_BACKEND.load(Ordering::Relaxed))
+}
 
 struct ModuleState {
     enabled_count: AtomicU32,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct DyndbgStatsSnapshot {
-    pub descriptors_recomputed: u64,
-    pub modules_repatched: u64,
-    pub sites_patched: u64,
 }
 
 impl ModuleState {
@@ -103,8 +129,10 @@ enum DyndbgRuleAction {
     Disable,
 }
 
+
+
 #[derive(Debug, Clone, Default)]
-pub struct DyndbgRule {
+struct DyndbgRule {
     file_keyword: Option<String>,
     module_keyword: Option<String>,
     function_keyword: Option<String>,
@@ -475,6 +503,57 @@ fn all_descriptors() -> Vec<&'static DebugDescriptor> {
 // 模块级别的指令修补
 #[cfg(target_arch = "x86_64")]
 fn patch_module_sites(module_key: &ModuleKey, enabled: bool) {
+    match get_dyndbg_patch_backend() {
+        DyndbgPatchBackend::PerSite => patch_module_sites_per_site(module_key, enabled),
+        DyndbgPatchBackend::Batch => patch_module_sites_batch(module_key, enabled),
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn patch_module_sites_per_site(module_key: &ModuleKey, enabled: bool) {
+    use ostd::arch::static_patch::{patch_5byte_slot, PatchInstruction};
+
+    let mut patched_sites = 0usize;
+    for site in &module_key.patch_sites {
+        // 0是占位符，还没填充真实地址 则跳过
+        if site.instruction_address == 0 {
+            continue;
+        }
+
+        // 生成要修补的指令。
+        let instruction = if enabled {
+            if site.metadata.jump_target == 0 {
+                continue;
+            }
+            PatchInstruction::JmpRel32 {
+                target: site.metadata.jump_target,
+            }
+        } else {
+            PatchInstruction::Nop5
+        };
+
+        patched_sites += 1;
+        if let Err(error) = patch_5byte_slot(site.instruction_address, instruction) {
+            log::warn!(
+                "dyndbg per-site patch failed: module_enabled={}, site=0x{:x}, error={:?}",
+                enabled,
+                site.instruction_address,
+                error
+            );
+        }
+    }
+
+    if patched_sites == 0 {
+        return;
+    }
+
+    DYNDBG_PATCH_TRANSACTIONS.fetch_add(patched_sites as u64, Ordering::Relaxed);
+    DYNDBG_MODULES_REPATCHED.fetch_add(1, Ordering::Relaxed);
+    DYNDBG_SITES_PATCHED.fetch_add(patched_sites as u64, Ordering::Relaxed);
+}
+
+#[cfg(target_arch = "x86_64")]
+fn patch_module_sites_batch(module_key: &ModuleKey, enabled: bool) {
     use ostd::arch::static_patch::{patch_5byte_slots, PatchInstruction, PatchRequest};
 
     let mut requests = Vec::new();
@@ -506,6 +585,7 @@ fn patch_module_sites(module_key: &ModuleKey, enabled: bool) {
         return;
     }
 
+    DYNDBG_PATCH_TRANSACTIONS.fetch_add(1, Ordering::Relaxed);
     DYNDBG_MODULES_REPATCHED.fetch_add(1, Ordering::Relaxed);
     DYNDBG_SITES_PATCHED.fetch_add(requests.len() as u64, Ordering::Relaxed);
 
@@ -717,6 +797,14 @@ pub struct DyndbgRuleEntrySnapshot {
     pub enabled: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct DyndbgStatsSnapshot {
+    pub descriptors_recomputed: u64,
+    pub modules_repatched: u64,
+    pub sites_patched: u64,
+    pub patch_transactions: u64,
+}
+
 impl From<DyndbgRuleSnapshot> for DyndbgRule {
     fn from(snapshot: DyndbgRuleSnapshot) -> Self {
         Self {
@@ -793,6 +881,7 @@ pub fn get_dyndbg_stats_snapshot() -> DyndbgStatsSnapshot {
         descriptors_recomputed: DYNDBG_DESCRIPTORS_RECOMPUTED.load(Ordering::Relaxed),
         modules_repatched: DYNDBG_MODULES_REPATCHED.load(Ordering::Relaxed),
         sites_patched: DYNDBG_SITES_PATCHED.load(Ordering::Relaxed),
+        patch_transactions: DYNDBG_PATCH_TRANSACTIONS.load(Ordering::Relaxed),
     }
 }
 
@@ -800,6 +889,7 @@ pub fn reset_dyndbg_stats() {
     DYNDBG_DESCRIPTORS_RECOMPUTED.store(0, Ordering::Relaxed);
     DYNDBG_MODULES_REPATCHED.store(0, Ordering::Relaxed);
     DYNDBG_SITES_PATCHED.store(0, Ordering::Relaxed);
+    DYNDBG_PATCH_TRANSACTIONS.store(0, Ordering::Relaxed);
 }
 
 // 清空规则链，新设置一条规则
