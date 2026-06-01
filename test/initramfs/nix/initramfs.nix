@@ -3,6 +3,14 @@
 let
   boot_hello = builtins.path { path = ./../src/boot_hello.sh; };
   dyndbg_tools = builtins.path { path = ./../../../tools/dyndbg; };
+  dyndbg_bench_rs = builtins.readFile ./../../../kernel/src/fs/fs_impls/procfs/sys/kernel/dyndbg_bench.rs;
+  dyndbg_bench_lines = lib.splitString "\n" dyndbg_bench_rs;
+  findLine = lines: lineNo:
+    if lines == [] then null else if lib.hasInfix "aster_logger::dyndbg_debug!" (builtins.head lines) then
+      lineNo
+    else
+      findLine (builtins.tail lines) (lineNo + 1);
+  dyndbg_line = findLine dyndbg_bench_lines 1;
   etc = lib.fileset.toSource {
     root = ./../src/etc;
     fileset = ./../src/etc;
@@ -40,6 +48,7 @@ in stdenvNoCC.mkDerivation {
     cp ${boot_hello} $out/test/boot_hello.sh
     mkdir -p $out/test/dyndbg
     cp -r ${dyndbg_tools}/* $out/test/dyndbg/
+    echo ${toString (if dyndbg_line == null then 196 else dyndbg_line)} > $out/etc/dyndbg_line.txt
 
     cp -r ${etc}/* $out/etc/
 
