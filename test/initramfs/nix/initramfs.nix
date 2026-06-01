@@ -2,6 +2,7 @@
 , benchmark, syscall, dnsServer, pkgs }:
 let
   boot_hello = builtins.path { path = ./../src/boot_hello.sh; };
+  dyndbg_tools = builtins.path { path = ./../../../tools/dyndbg; };
   etc = lib.fileset.toSource {
     root = ./../src/etc;
     fileset = ./../src/etc;
@@ -37,6 +38,8 @@ in stdenvNoCC.mkDerivation {
     ''}
 
     cp ${boot_hello} $out/test/boot_hello.sh
+    mkdir -p $out/test/dyndbg
+    cp -r ${dyndbg_tools}/* $out/test/dyndbg/
 
     cp -r ${etc}/* $out/etc/
 
