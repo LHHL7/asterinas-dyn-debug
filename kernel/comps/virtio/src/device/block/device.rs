@@ -21,7 +21,7 @@ use aster_block::{
 use aster_util::mem_obj_slice::Slice;
 use aster_logger::dyndbg_debug as debug;
 use device_id::{DeviceId, MinorId};
-use log::info;
+use log::{info, trace};
 use ostd::{
     arch::trap::TrapFrame,
     mm::{HasSize, VmIo, dma::DmaStream},
@@ -116,7 +116,7 @@ impl BlockDevice {
     /// processes the request.
     pub fn handle_requests(&self) {
         let request = self.queue.dequeue();
-        info!("Handle Request: {:?}", request);
+        trace!("Handle Request: {:?}", request);
         match request.type_() {
             BioType::Read => self.device.read(request),
             BioType::Write => self.device.write(request),
@@ -277,7 +277,7 @@ impl DeviceInner {
 
     /// Handles the IRQ issued from the device.
     fn handle_irq(&self) {
-        info!("Virtio block device handle IRQ");
+        trace!("Virtio block device handle IRQ");
         // When we enter the IRQs handling function,
         // IRQs have already been disabled,
         // so there is no need to call `disable_irq`.

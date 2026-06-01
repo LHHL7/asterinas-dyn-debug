@@ -7,7 +7,7 @@ use core::arch::x86_64::{_fxrstor64, _fxsave64, _xrstor64, _xsave64};
 
 use bitflags::bitflags;
 use cfg_if::cfg_if;
-use log::debug;
+use log::trace;
 use ostd_pod::{FromZeros, IntoBytes};
 use spin::Once;
 use x86::bits64::segmentation::wrfsbase;
@@ -526,7 +526,7 @@ impl FpuContext {
             unsafe { _fxsave64(mem_addr) };
         }
 
-        debug!("Save FPU context");
+        trace!("Save FPU context");
     }
 
     /// Loads CPU's FPU context from this instance.
@@ -541,7 +541,7 @@ impl FpuContext {
             unsafe { _fxrstor64(mem_addr) };
         }
 
-        debug!("Load FPU context");
+        trace!("Load FPU context");
     }
 
     /// Returns the FPU context as a byte slice.
