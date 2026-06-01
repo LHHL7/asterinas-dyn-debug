@@ -51,11 +51,11 @@ fn try_register_mmio_device<F>(
 where
     F: FnOnce(IrqLine) -> ostd::Result<arch::MappedIrqLine>,
 {
-    let start_addr = mmio_range.start;
+    let _start_addr = mmio_range.start;
     let Ok(io_mem) = IoMem::acquire(mmio_range) else {
         debug!(
             "[Virtio]: Abort MMIO detection at {:#x} because the MMIO address is not available",
-            start_addr
+            _start_addr
         );
         return Err(MmioRegisterError::MmioUnavailable);
     };
@@ -68,7 +68,7 @@ where
     if !mmio_check_magic(&io_mem) {
         debug!(
             "[Virtio]: Abort MMIO detection at {:#x} because the magic number does not match",
-            start_addr
+            _start_addr
         );
         return Err(MmioRegisterError::MagicMismatch);
     }
@@ -87,7 +87,7 @@ where
     let Ok(mapped_irq_line) = IrqLine::alloc().and_then(map_irq_line) else {
         debug!(
             "[Virtio]: Ignore MMIO device at {:#x} because its IRQ line is not available",
-            start_addr
+            _start_addr
         );
         return Err(MmioRegisterError::IrqUnavailable);
     };

@@ -131,8 +131,8 @@ impl InputDevice {
         };
 
         let input_prop = device.query_config_prop_bits();
-        if let Some(prop) = input_prop {
-            debug!("input device prop: {:?}", prop);
+        if let Some(_prop) = input_prop {
+            debug!("input device prop: {:?}", _prop);
         } else {
             debug!("input device has no properties or the properties is not defined");
         }

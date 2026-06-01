@@ -5,6 +5,7 @@ use cpio_decoder::{CpioDecoder, CpioEntry, FileMetadata, FileType};
 use device_id::{DeviceId, MajorId, MinorId};
 use lending_iterator::LendingIterator;
 use libflate::gzip::Decoder as GZipDecoder;
+use no_std_io2::io::Read as NoStdRead;
 use ostd::boot::boot_info;
 
 use super::{
@@ -36,9 +37,13 @@ pub fn init_in_first_kthread(path_resolver: &PathResolver) -> Result<()> {
     let (reader, suffix) = match &initramfs_buf[..4] {
         // Gzip magic number: 0x1F 0x8B
         &[0x1F, 0x8B, _, _] => {
-            let gzip_decoder = GZipDecoder::new(initramfs_buf)
+            let mut gzip_decoder = GZipDecoder::new(initramfs_buf)
                 .map_err(|_| Error::with_message(Errno::EINVAL, "invalid gzip buffer"))?;
-            (BoxedReader::new(Box::new(gzip_decoder)), ".gz")
+            let mut decompressed = Vec::new();
+            gzip_decoder
+                .read_to_end(&mut decompressed)
+                .map_err(|_| Error::with_message(Errno::EIO, "failed to decompress initramfs"))?;
+            (BoxedReader::new(Box::new(Cursor::new(decompressed))), ".gz")
         }
         _ => (BoxedReader::new(Box::new(Cursor::new(initramfs_buf))), ""),
     };

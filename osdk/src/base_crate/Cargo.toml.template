@@ -6,3 +6,6 @@
 name = "#NAME#"
 version = "#VERSION#"
 edition = "2024"
+
+[patch.crates-io]
+core2 = { git = "https://github.com/bbqsrc/core2", rev = "545e84bcb0f235b12e21351e0c69767958efe2a7" }
