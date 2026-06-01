@@ -138,6 +138,7 @@ impl VirtioBlockConfig {
 }
 
 impl ConfigManager<VirtioBlockConfig> {
+    #[cfg_attr(not(any(feature = "dyndbg", feature = "branchdbg")), allow(dead_code))]
     pub(self) fn read_config(&self) -> VirtioBlockConfig {
         let mut blk_config = VirtioBlockConfig::new_zeroed();
         // Only following fields are defined in legacy interface.

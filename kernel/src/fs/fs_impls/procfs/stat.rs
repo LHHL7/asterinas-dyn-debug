@@ -20,7 +20,7 @@ use crate::{
     prelude::*,
     process::collect_process_creation_count,
     sched::nr_queued_and_running,
-    thread::collect_context_switch_count,
+    thread::{collect_context_switch_count, collect_page_fault_count},
     time::{START_TIME, SystemTime, cpu_time_stats::CpuTimeStatsManager},
 };
 
@@ -97,6 +97,9 @@ impl StatFileOps {
         // Context switch count
         let context_switches: usize = collect_context_switch_count();
         writeln!(printer, "ctxt {}", context_switches)?;
+
+        // Total resolved user page faults across all CPUs.
+        writeln!(printer, "page_faults {}", collect_page_fault_count())?;
 
         // Boot time (seconds since UNIX epoch)
         if let Some(start_time) = START_TIME.get() {

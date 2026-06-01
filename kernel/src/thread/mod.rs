@@ -16,7 +16,8 @@ use crate::{
 };
 mod stats;
 use stats::CONTEXT_SWITCH_COUNTER;
-pub use stats::collect_context_switch_count;
+use stats::PAGE_FAULT_COUNTER;
+pub use stats::{collect_context_switch_count, collect_page_fault_count};
 pub mod exception;
 pub mod kernel_thread;
 pub mod oops;
@@ -58,6 +59,7 @@ fn post_schedule_handler() {
 
 pub(super) fn init() {
     CONTEXT_SWITCH_COUNTER.call_once(PerCpuCounter::new);
+    PAGE_FAULT_COUNTER.call_once(PerCpuCounter::new);
     ostd::task::inject_pre_schedule_handler(pre_schedule_handler);
     ostd::task::inject_post_schedule_handler(post_schedule_handler);
     ostd::arch::trap::inject_user_page_fault_handler(exception::page_fault_handler);

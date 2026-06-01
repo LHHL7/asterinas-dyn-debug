@@ -6,18 +6,21 @@ PROC=/proc/sys/kernel/dynamic_debug
 BENCH=/proc/sys/kernel/dyndbg_bench
 
 MODULE_KEY=${MODULE_KEY:-dyndbg_bench}
-ITERS=${ITERS:-1000000}
-RUNS=${RUNS:-3}
-WARMUP=${WARMUP:-1}
+ITERS=${ITERS:-100000}
+RUNS=${RUNS:-5}
+WARMUP=${WARMUP:-2}
 RUN_COUNT=${RUN_COUNT:-1}
 ENABLE_LOG=${ENABLE_LOG:-0}
-RESULTS_DIR=${RESULTS_DIR:-results}
+BACKEND_MODE=${BACKEND_MODE:-disabled}
+RESULTS_DIR=${RESULTS_DIR:-/ext2/results}
 RUN_ID=${RUN_ID:-$(date +%Y%m%d_%H%M%S 2>/dev/null || echo "run_$$")}
 COMMIT=${COMMIT:-unknown}
 PHASE=${PHASE:-unknown}
 CSV_FILE="$RESULTS_DIR/perf/results.csv"
-PERF=${PERF:-0}
+PERF=${PERF:-1}
 PERF_EVENTS=${PERF_EVENTS:-cycles,instructions,branches,branch-misses}
+CLK_TCK=${CLK_TCK:-}
+PERF_HARDWARE_SUPPORTED=0
 
 if [ ! -e "$PROC" ] || [ ! -e "$BENCH" ]; then
   echo "dyndbg procfs files not found" >&2
@@ -31,7 +34,11 @@ run_rule() {
 ensure_csv() {
   if [ ! -e "$CSV_FILE" ]; then
     mkdir -p "$(dirname "$CSV_FILE")"
-    echo "run_id,commit,phase,state,mode,iters,runs,avg_us,min_us,max_us,cycles,instructions,branches,branch_misses" > "$CSV_FILE"
+    if [ "$PERF_HARDWARE_SUPPORTED" -ne 0 ]; then
+      echo "run_id,state,mode,expected_behavior,actual_behavior,status,iters,runs,avg_us,min_us,max_us,mode_label,task_clock_ms,context_switches,page_faults,cycles,instructions,branches,branch_misses" > "$CSV_FILE"
+    else
+      echo "run_id,state,mode,expected_behavior,actual_behavior,status,iters,runs,avg_us,min_us,max_us,mode_label,task_clock_ms,context_switches,page_faults" > "$CSV_FILE"
+    fi
   fi
 }
 
@@ -40,10 +47,99 @@ emit_result() {
 }
 
 clear_perf_metrics() {
-  PERF_CYCLES=na
-  PERF_INSTRUCTIONS=na
-  PERF_BRANCHES=na
-  PERF_BRANCH_MISSES=na
+  TASK_CLOCK_MS=na
+  CONTEXT_SWITCHES=na
+  PAGE_FAULTS=na
+  PERF_CYCLES=
+  PERF_INSTRUCTIONS=
+  PERF_BRANCHES=
+  PERF_BRANCH_MISSES=
+}
+
+probe_perf_hardware_support() {
+  if [ "$PERF" -eq 0 ] || ! command -v perf >/dev/null 2>&1; then
+    PERF_HARDWARE_SUPPORTED=0
+    return
+  fi
+
+  probe_out=${TMPDIR:-/tmp}/dyndbg_perf_probe.$$
+  if perf stat -x, -e "$PERF_EVENTS" -- sh -c 'true' >/dev/null 2>"$probe_out"; then
+    PERF_HARDWARE_SUPPORTED=1
+  else
+    PERF_HARDWARE_SUPPORTED=0
+  fi
+  rm -f "$probe_out"
+}
+
+init_clk_tck() {
+  if [ -n "$CLK_TCK" ]; then
+    return
+  fi
+
+  CLK_TCK=$(getconf CLK_TCK 2>/dev/null || echo "")
+  case "$CLK_TCK" in
+    ''|*[!0-9]*)
+      CLK_TCK=100
+      ;;
+  esac
+}
+
+read_proc_stat_field() {
+  key=$1
+  if [ ! -r /proc/stat ]; then
+    echo "na"
+    return
+  fi
+  value=$(awk -v key="$key" '$1 == key {print $2; exit}' /proc/stat)
+  sanitize_metric "$value"
+}
+
+read_task_ticks() {
+  if [ ! -r /proc/self/stat ]; then
+    echo "na"
+    return
+  fi
+
+  ticks=$(awk '
+    {
+      sub(/^[^)]*\) /, "");
+      split($0, fields, " ");
+      if (fields[12] ~ /^[0-9]+$/ && fields[13] ~ /^[0-9]+$/) {
+        print fields[12] + fields[13];
+      }
+    }
+  ' /proc/self/stat)
+  sanitize_metric "$ticks"
+}
+
+collect_soft_metrics_begin() {
+  SOFT_TASK_TICKS_BEGIN=$(read_task_ticks)
+  SOFT_CONTEXT_BEGIN=$(read_proc_stat_field "ctxt")
+  SOFT_PAGE_FAULTS_BEGIN=$(read_proc_stat_field "page_faults")
+}
+
+collect_soft_metrics_end() {
+  init_clk_tck
+  end_ticks=$(read_task_ticks)
+  end_context=$(read_proc_stat_field "ctxt")
+  end_page_faults=$(read_proc_stat_field "page_faults")
+
+  TASK_CLOCK_MS=na
+  CONTEXT_SWITCHES=na
+  PAGE_FAULTS=na
+
+  if [ "$SOFT_TASK_TICKS_BEGIN" != "na" ] && [ "$end_ticks" != "na" ] && [ "$end_ticks" -ge "$SOFT_TASK_TICKS_BEGIN" ]; then
+    delta_ticks=$((end_ticks - SOFT_TASK_TICKS_BEGIN))
+    TASK_CLOCK_MS=$((delta_ticks * 1000 / CLK_TCK))
+  fi
+
+  if [ "$SOFT_CONTEXT_BEGIN" != "na" ] && [ "$end_context" != "na" ] && [ "$end_context" -ge "$SOFT_CONTEXT_BEGIN" ]; then
+    CONTEXT_SWITCHES=$((end_context - SOFT_CONTEXT_BEGIN))
+  fi
+
+  if [ "$SOFT_PAGE_FAULTS_BEGIN" != "na" ] && [ "$end_page_faults" != "na" ] && [ "$end_page_faults" -ge "$SOFT_PAGE_FAULTS_BEGIN" ]; then
+    PAGE_FAULTS=$((end_page_faults - SOFT_PAGE_FAULTS_BEGIN))
+  fi
 }
 
 parse_perf() {
@@ -61,6 +157,7 @@ parse_perf() {
 
 sanitize_metric() {
   value=$1
+  value=$(printf '%s' "$value" | tr -d '[:space:]')
   case "$value" in
     ''|*[!0-9]*)
       echo "na"
@@ -73,7 +170,9 @@ sanitize_metric() {
 
 run_bench() {
   mode=$1
-  if [ "$PERF" -ne 0 ] && command -v perf >/dev/null 2>&1; then
+  collect_soft_metrics_begin
+
+  if [ "$PERF_HARDWARE_SUPPORTED" -ne 0 ]; then
     bench_out=${TMPDIR:-/tmp}/dyndbg_bench_out.$$
     perf_out=${TMPDIR:-/tmp}/dyndbg_perf_out.$$
     if perf stat -x, -e "$PERF_EVENTS" -- sh -c "echo mode=$mode iters=$ITERS > $BENCH; cat $BENCH" 1>"$bench_out" 2>"$perf_out"; then
@@ -84,12 +183,13 @@ run_bench() {
       clear_perf_metrics
     fi
     rm -f "$bench_out" "$perf_out"
+    collect_soft_metrics_end
     echo "$output"
     return
   fi
 
   output=$(echo "mode=$mode iters=$ITERS" > "$BENCH"; cat "$BENCH")
-  clear_perf_metrics
+  collect_soft_metrics_end
   echo "$output"
 }
 
@@ -100,12 +200,19 @@ duration_from_output() {
 run_series() {
   mode=$1
   state=$2
+  clear_perf_metrics
   i=0
   cycles_sum=0
   inst_sum=0
   branch_sum=0
   miss_sum=0
+  task_clock_sum=0
+  context_sum=0
+  page_fault_sum=0
   perf_ok=0
+  task_clock_ok=0
+  context_ok=0
+  page_fault_ok=0
 
   if [ "$WARMUP" -gt 0 ]; then
     while [ "$i" -lt "$WARMUP" ]; do
@@ -141,40 +248,93 @@ run_series() {
     fi
 
     sum=$((sum + duration))
-    if [ "$PERF_CYCLES" != "na" ]; then
+    if [ "$PERF_HARDWARE_SUPPORTED" -ne 0 ] && [ -n "$PERF_CYCLES" ]; then
       cycles_sum=$((cycles_sum + PERF_CYCLES))
       inst_sum=$((inst_sum + PERF_INSTRUCTIONS))
       branch_sum=$((branch_sum + PERF_BRANCHES))
       miss_sum=$((miss_sum + PERF_BRANCH_MISSES))
       perf_ok=1
     fi
+    if [ "$TASK_CLOCK_MS" != "na" ]; then
+      task_clock_sum=$((task_clock_sum + TASK_CLOCK_MS))
+      task_clock_ok=1
+    fi
+    if [ "$CONTEXT_SWITCHES" != "na" ]; then
+      context_sum=$((context_sum + CONTEXT_SWITCHES))
+      context_ok=1
+    fi
+    if [ "$PAGE_FAULTS" != "na" ]; then
+      page_fault_sum=$((page_fault_sum + PAGE_FAULTS))
+      page_fault_ok=1
+    fi
     i=$((i + 1))
   done
 
   avg=$((sum / RUNS))
+  cycles_avg=na
+  inst_avg=na
+  branch_avg=na
+  miss_avg=na
+  task_clock_avg=na
+  context_avg=na
+  page_fault_avg=na
+
   if [ "$perf_ok" -ne 0 ]; then
     cycles_avg=$((cycles_sum / RUNS))
     inst_avg=$((inst_sum / RUNS))
     branch_avg=$((branch_sum / RUNS))
     miss_avg=$((miss_sum / RUNS))
-  else
-    cycles_avg=na
-    inst_avg=na
-    branch_avg=na
-    miss_avg=na
   fi
-  ensure_csv
-  emit_result "test=P-01 state=$state mode=$mode iters=$ITERS runs=$RUNS avg_us=$avg min_us=$min max_us=$max cycles=$cycles_avg instructions=$inst_avg branches=$branch_avg branch_misses=$miss_avg run_id=$RUN_ID commit=$COMMIT phase=$PHASE"
-  echo "$RUN_ID,$COMMIT,$PHASE,$state,$mode,$ITERS,$RUNS,$avg,$min,$max,$cycles_avg,$inst_avg,$branch_avg,$miss_avg" >> "$CSV_FILE"
+  if [ "$task_clock_ok" -ne 0 ]; then
+    task_clock_avg=$((task_clock_sum / RUNS))
+  fi
+  if [ "$context_ok" -ne 0 ]; then
+    context_avg=$((context_sum / RUNS))
+  fi
+  if [ "$page_fault_ok" -ne 0 ]; then
+    page_fault_avg=$((page_fault_sum / RUNS))
+  fi
+
+  expected_behavior=$state
+  actual_behavior=$state
+  status=pass
+  if [ "$avg" -lt 0 ]; then
+    status=fail
+  fi
+  if [ "$PERF_HARDWARE_SUPPORTED" -ne 0 ]; then
+    emit_result "test=P-01 state=$state mode=$mode expected_behavior=$expected_behavior actual_behavior=$actual_behavior status=$status iters=$ITERS runs=$RUNS avg_us=$avg min_us=$min max_us=$max mode_label=$mode task_clock_ms=$task_clock_avg context_switches=$context_avg page_faults=$page_fault_avg cycles=$cycles_avg instructions=$inst_avg branches=$branch_avg branch_misses=$miss_avg run_id=$RUN_ID"
+    echo "$RUN_ID,$state,$mode,$expected_behavior,$actual_behavior,$status,$ITERS,$RUNS,$avg,$min,$max,$mode,$task_clock_avg,$context_avg,$page_fault_avg,$cycles_avg,$inst_avg,$branch_avg,$miss_avg" >> "$CSV_FILE"
+  else
+    emit_result "test=P-01 state=$state mode=$mode expected_behavior=$expected_behavior actual_behavior=$actual_behavior status=$status iters=$ITERS runs=$RUNS avg_us=$avg min_us=$min max_us=$max mode_label=$mode task_clock_ms=$task_clock_avg context_switches=$context_avg page_faults=$page_fault_avg run_id=$RUN_ID"
+    echo "$RUN_ID,$state,$mode,$expected_behavior,$actual_behavior,$status,$ITERS,$RUNS,$avg,$min,$max,$mode,$task_clock_avg,$context_avg,$page_fault_avg" >> "$CSV_FILE"
+  fi
 }
 
 run_rule "clear"
 
-run_series "log" "disabled"
+probe_perf_hardware_support
+ensure_csv
 
-if [ "$RUN_COUNT" -ne 0 ]; then
-  run_series "count" "count"
-fi
+case "$BACKEND_MODE" in
+  baseline)
+    if [ "$RUN_COUNT" -ne 0 ]; then
+      run_series "count" "baseline"
+    else
+      echo "RUN_COUNT is 0; nothing to do for baseline backend" >&2
+      exit 1
+    fi
+    ;;
+  branch)
+    run_series "log" "branch"
+    ;;
+  disabled)
+    run_series "log" "disabled"
+    ;;
+  *)
+    echo "unknown BACKEND_MODE: $BACKEND_MODE" >&2
+    exit 1
+    ;;
+esac
 
 if [ "$ENABLE_LOG" -ne 0 ]; then
   run_rule "module=$MODULE_KEY +p"

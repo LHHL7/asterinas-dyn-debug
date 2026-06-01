@@ -11,6 +11,7 @@ use ostd::{arch::cpu::context::UserContext, task::Task};
 use crate::{
     prelude::*,
     process::signal::signals::fault::FaultSignal,
+    thread::stats::PAGE_FAULT_COUNTER,
     vm::vmar::{PageFaultInfo, Vmar},
 };
 
@@ -41,6 +42,10 @@ fn handle_page_fault_from_vmar(
         );
         return Err(());
     }
+    PAGE_FAULT_COUNTER
+        .get()
+        .unwrap()
+        .add_on_cpu(ostd::cpu::CpuId::current_racy(), 1);
     Ok(())
 }
 

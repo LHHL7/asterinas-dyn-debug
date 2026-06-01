@@ -77,9 +77,11 @@ riscv = { version = "0.15.0", features = ["s-mode"] }
 loongArch64 = "0.2.5"
 
 [features]
-default = ["cvm_guest"]
+default = ["cvm_guest", "dyndbg"]
 coverage = ["ostd/coverage"]
 cvm_guest = ["dep:tdx-guest", "ostd/cvm_guest", "aster-virtio/cvm_guest"]
+dyndbg = []
+branchdbg = []
 # By default we use the Sv48 address translation mode.
 riscv_sv39_mode = ["ostd/riscv_sv39_mode"]
 
