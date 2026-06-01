@@ -9,6 +9,7 @@ stdenvNoCC.mkDerivation {
     chmod -R 0755 etc
     chmod -R 0755 opt
     chmod -R 0755 test
+    chmod -R 0755 results
     chmod -R 0755 ext2
     chmod -R 0755 exfat
     chmod -R 0755 var

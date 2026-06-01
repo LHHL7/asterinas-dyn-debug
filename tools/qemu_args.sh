@@ -21,6 +21,8 @@ VHOST=${VHOST:-"off"}
 VSOCK=${VSOCK:-"off"}
 NETDEV=${NETDEV:-"user"}
 CONSOLE=${CONSOLE:-"hvc0"}
+DYNDDBG_SHARED_RESULTS=${DYNDDBG_SHARED_RESULTS:-0}
+RESULTS_SHARE_DIR=${RESULTS_SHARE_DIR:-$(pwd)/results}
 
 SSH_RAND_PORT=${SSH_PORT:-$(shuf -i 1024-65535 -n 1)}
 NGINX_RAND_PORT=${NGINX_PORT:-$(shuf -i 1024-65535 -n 1)}
@@ -55,6 +57,12 @@ else
     CONSOLE_ARGS="-serial chardev:mux"
 fi
 
+RESULTS_SHARE_ARGS=""
+if [ "$DYNDDBG_SHARED_RESULTS" != 0 ] && [ "$1" != "tdx" ] && [ "$1" != "microvm" ]; then
+    mkdir -p "$RESULTS_SHARE_DIR"
+    RESULTS_SHARE_ARGS="-fsdev local,id=results_share,path=$RESULTS_SHARE_DIR,security_model=none -device virtio-9p-pci,fsdev=results_share,mount_tag=results"
+fi
+
 if [ "$1" = "tdx" ]; then
     TDX_OBJECT='{ "qom-type": "tdx-guest", "id": "tdx0", "sept-ve-disable": true, "quote-generation-socket": { "type": "vsock", "cid": "2", "port": "4050" } }'
 
@@ -73,6 +81,7 @@ if [ "$1" = "tdx" ]; then
         -device virtio-keyboard-pci,disable-legacy=on,disable-modern=off \
         $NETDEV_ARGS \
         $QEMU_OPT_ARG_DUMP_PACKETS \
+        $RESULTS_SHARE_ARGS \
         -chardev stdio,id=mux,mux=on,logfile=qemu.log \
         -device virtio-serial,romfile= \
         $CONSOLE_ARGS \
@@ -120,6 +129,7 @@ QEMU_ARGS="\
     -device virtio-blk-pci,bus=pcie.0,addr=0x7,drive=x1,serial=vexfat,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off$IOMMU_DEV_EXTRA \
     -device virtio-net-pci,netdev=net01,disable-legacy=on,disable-modern=off$VIRTIO_NET_FEATURES$IOMMU_DEV_EXTRA \
     -device virtio-serial-pci,disable-legacy=on,disable-modern=off$IOMMU_DEV_EXTRA \
+    $RESULTS_SHARE_ARGS \
     $CONSOLE_ARGS \
     $IOMMU_EXTRA_ARGS \
 "
