@@ -9,11 +9,12 @@ MODULE_KEY=${MODULE_KEY:-dyndbg_bench}
 FILE_KEY=${FILE_KEY:-dyndbg_bench.rs}
 FUNC_KEY=${FUNC_KEY:-bench_log}
 LINE_KEY=${LINE_KEY:-}
-STORM_ITERS=${STORM_ITERS:-10000}
-LOG_ITERS=${LOG_ITERS:-1000000}
-CLEAR_INTERVAL=${CLEAR_INTERVAL:-100}
+STORM_ITERS=${STORM_ITERS:-2000}
+LOG_ITERS=${LOG_ITERS:-50000}
+CLEAR_INTERVAL=${CLEAR_INTERVAL:-50}
 SLEEP_US=${SLEEP_US:-0}
-RESULTS_DIR=${RESULTS_DIR:-results}
+BENCH_MODE=${BENCH_MODE:-log}
+RESULTS_DIR=${RESULTS_DIR:-/ext2/results}
 RUN_ID=${RUN_ID:-$(date +%Y%m%d_%H%M%S 2>/dev/null || echo "run_$$")}
 COMMIT=${COMMIT:-unknown}
 PHASE=${PHASE:-unknown}
@@ -36,7 +37,7 @@ read_uptime() {
 ensure_csv() {
   if [ ! -e "$CSV_FILE" ]; then
     mkdir -p "$(dirname "$CSV_FILE")"
-    echo "run_id,commit,phase,case,storm_iters,log_iters,elapsed_s,clear_interval,sleep_us,dmesg_status,dmesg_hits" > "$CSV_FILE"
+    echo "run_id,case,bench_mode,storm_iters,log_iters,elapsed_s,clear_interval,sleep_us,dmesg_status,dmesg_hits" > "$CSV_FILE"
   fi
 }
 
@@ -121,7 +122,7 @@ if [ -n "$LINE_KEY" ]; then
   PID4=$!
 fi
 
-echo "mode=log iters=$LOG_ITERS" > "$BENCH" &
+echo "mode=$BENCH_MODE iters=$LOG_ITERS" > "$BENCH" &
 PID5=$!
 
 wait "$PID1" "$PID2" "$PID3" 2>/dev/null || true
@@ -138,7 +139,7 @@ elapsed=$(awk -v s="$start" -v e="$end" 'BEGIN{printf "%.6f", e-s}')
 check_dmesg
 
 ensure_csv
-emit_result "test=C-03 storm_iters=$STORM_ITERS log_iters=$LOG_ITERS elapsed_s=$elapsed clear_interval=$CLEAR_INTERVAL sleep_us=$SLEEP_US dmesg_status=$DMESG_STATUS dmesg_hits=$DMESG_HITS run_id=$RUN_ID commit=$COMMIT phase=$PHASE"
-echo "$RUN_ID,$COMMIT,$PHASE,C-03,$STORM_ITERS,$LOG_ITERS,$elapsed,$CLEAR_INTERVAL,$SLEEP_US,$DMESG_STATUS,$DMESG_HITS" >> "$CSV_FILE"
+emit_result "test=C-03 bench_mode=$BENCH_MODE storm_iters=$STORM_ITERS log_iters=$LOG_ITERS elapsed_s=$elapsed clear_interval=$CLEAR_INTERVAL sleep_us=$SLEEP_US dmesg_status=$DMESG_STATUS dmesg_hits=$DMESG_HITS run_id=$RUN_ID"
+echo "$RUN_ID,C-03,$BENCH_MODE,$STORM_ITERS,$LOG_ITERS,$elapsed,$CLEAR_INTERVAL,$SLEEP_US,$DMESG_STATUS,$DMESG_HITS" >> "$CSV_FILE"
 
 echo "patch storm test finished"

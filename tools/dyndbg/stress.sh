@@ -6,7 +6,7 @@ PROC=/proc/sys/kernel/dynamic_debug
 
 MODULE_KEY=${MODULE_KEY:-dyndbg_bench}
 TOGGLE_ITERS=${TOGGLE_ITERS:-100000}
-RESULTS_DIR=${RESULTS_DIR:-results}
+RESULTS_DIR=${RESULTS_DIR:-/ext2/results}
 RUN_ID=${RUN_ID:-$(date +%Y%m%d_%H%M%S 2>/dev/null || echo "run_$$")}
 COMMIT=${COMMIT:-unknown}
 PHASE=${PHASE:-unknown}
@@ -25,7 +25,7 @@ run_rule() {
 ensure_csv() {
   if [ ! -e "$CSV_FILE" ]; then
     mkdir -p "$(dirname "$CSV_FILE")"
-    echo "run_id,commit,phase,case,toggle_iters,elapsed_s,dmesg_status,dmesg_hits" > "$CSV_FILE"
+    echo "run_id,case,toggle_iters,elapsed_s,dmesg_status,dmesg_hits" > "$CSV_FILE"
   fi
 }
 
@@ -76,7 +76,7 @@ echo "elapsed_s=$elapsed"
 check_dmesg
 
 ensure_csv
-emit_result "test=C-02 toggle_iters=$TOGGLE_ITERS elapsed_s=$elapsed dmesg_status=$DMESG_STATUS dmesg_hits=$DMESG_HITS run_id=$RUN_ID commit=$COMMIT phase=$PHASE"
-echo "$RUN_ID,$COMMIT,$PHASE,C-02,$TOGGLE_ITERS,$elapsed,$DMESG_STATUS,$DMESG_HITS" >> "$CSV_FILE"
+emit_result "test=C-02 toggle_iters=$TOGGLE_ITERS elapsed_s=$elapsed dmesg_status=$DMESG_STATUS dmesg_hits=$DMESG_HITS run_id=$RUN_ID"
+echo "$RUN_ID,C-02,$TOGGLE_ITERS,$elapsed,$DMESG_STATUS,$DMESG_HITS" >> "$CSV_FILE"
 
 echo "stress test finished"

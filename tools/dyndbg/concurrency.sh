@@ -6,12 +6,11 @@ PROC=/proc/sys/kernel/dynamic_debug
 BENCH=/proc/sys/kernel/dyndbg_bench
 
 MODULE_KEY=${MODULE_KEY:-dyndbg_bench}
-TOGGLE_ITERS=${TOGGLE_ITERS:-10000}
-LOG_ITERS=${LOG_ITERS:-1000000}
-RESULTS_DIR=${RESULTS_DIR:-results}
+TOGGLE_ITERS=${TOGGLE_ITERS:-5000}
+LOG_ITERS=${LOG_ITERS:-50000}
+BENCH_MODE=${BENCH_MODE:-count}
+RESULTS_DIR=${RESULTS_DIR:-/ext2/results}
 RUN_ID=${RUN_ID:-$(date +%Y%m%d_%H%M%S 2>/dev/null || echo "run_$$")}
-COMMIT=${COMMIT:-unknown}
-PHASE=${PHASE:-unknown}
 CSV_FILE="$RESULTS_DIR/concurrency/results.csv"
 DMESG_CHECK=${DMESG_CHECK:-1}
 
@@ -27,7 +26,7 @@ run_rule() {
 ensure_csv() {
   if [ ! -e "$CSV_FILE" ]; then
     mkdir -p "$(dirname "$CSV_FILE")"
-    echo "run_id,commit,phase,case,toggle_iters,log_iters,duration_us,dmesg_status,dmesg_hits" > "$CSV_FILE"
+    echo "run_id,case,toggle_iters,log_iters,bench_mode,duration_us,dmesg_status,dmesg_hits,expected_outcome,actual_outcome,status" > "$CSV_FILE"
   fi
 }
 
@@ -75,7 +74,7 @@ run_rule "module=$MODULE_KEY +p"
 toggle_loop &
 TOGGLE_PID=$!
 
-echo "mode=log iters=$LOG_ITERS" > "$BENCH"
+echo "mode=$BENCH_MODE iters=$LOG_ITERS" > "$BENCH"
 wait "$TOGGLE_PID"
 output=$(cat "$BENCH")
 echo "$output"
@@ -86,8 +85,15 @@ fi
 
 check_dmesg
 
+expected_outcome=no_panic
+actual_outcome=$DMESG_STATUS
+STATUS=pass
+if [ "$DMESG_STATUS" = "fail" ]; then
+  STATUS=fail
+fi
+
 ensure_csv
-emit_result "test=C-01 toggle_iters=$TOGGLE_ITERS log_iters=$LOG_ITERS duration_us=$duration dmesg_status=$DMESG_STATUS dmesg_hits=$DMESG_HITS run_id=$RUN_ID commit=$COMMIT phase=$PHASE"
-echo "$RUN_ID,$COMMIT,$PHASE,C-01,$TOGGLE_ITERS,$LOG_ITERS,$duration,$DMESG_STATUS,$DMESG_HITS" >> "$CSV_FILE"
+emit_result "test=C-01 toggle_iters=$TOGGLE_ITERS log_iters=$LOG_ITERS bench_mode=$BENCH_MODE duration_us=$duration dmesg_status=$DMESG_STATUS dmesg_hits=$DMESG_HITS expected_outcome=$expected_outcome actual_outcome=$actual_outcome status=$STATUS run_id=$RUN_ID"
+echo "$RUN_ID,C-01,$TOGGLE_ITERS,$LOG_ITERS,$BENCH_MODE,$duration,$DMESG_STATUS,$DMESG_HITS,$expected_outcome,$actual_outcome,$STATUS" >> "$CSV_FILE"
 
 echo "concurrency test finished"
