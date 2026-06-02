@@ -176,27 +176,88 @@ scenario_mkdir_rmdir() {
   done
 }
 
+scenario_pipe_comm() {
+  i=1
+  while [ "$i" -le "$ITERS" ]; do
+    (
+      printf '%s\n' "$i"
+    ) | (
+      read _payload
+      :
+    )
+    i=$((i + 1))
+  done
+}
+
+scenario_fork_wait() {
+  i=1
+  while [ "$i" -le "$ITERS" ]; do
+    ( : ) &
+    child_pid=$!
+    wait "$child_pid"
+    i=$((i + 1))
+  done
+}
+
+scenario_dup_close() {
+  i=1
+  while [ "$i" -le "$ITERS" ]; do
+    (
+      exec 3>&1
+      exec 4>&2
+      exec 1>&3
+      exec 2>&4
+      exec 3>&-
+      exec 4>&-
+    )
+    i=$((i + 1))
+  done
+}
+
+workload_rules() {
+  workload=$1
+
+  case "$workload" in
+    create_delete)
+      echo "file=open.rs -p,file=close.rs -p,file=unlink.rs -p"
+      ;;
+    rename)
+      echo "file=rename.rs -p"
+      ;;
+    mkdir_rmdir)
+      echo "file=mkdir.rs -p,file=rmdir.rs -p"
+      ;;
+    pipe_comm)
+      echo "file=pipe.rs -p,file=read.rs -p,file=write.rs -p"
+      ;;
+    fork_wait)
+      echo "file=clone.rs -p,file=wait4.rs -p"
+      ;;
+    fd_dup_close)
+      echo "file=dup.rs -p"
+      ;;
+    *)
+      echo "unknown"
+      ;;
+  esac
+}
+
 apply_disabled_rules() {
   scenario=$1
   run_rule "clear"
-  case "$scenario" in
-    create_delete)
-      run_rule "file=open.rs -p"
-      run_rule "file=close.rs -p"
-      run_rule "file=unlink.rs -p"
-      ;;
-    rename)
-      run_rule "file=rename.rs -p"
-      ;;
-    mkdir_rmdir)
-      run_rule "file=mkdir.rs -p"
-      run_rule "file=rmdir.rs -p"
-      ;;
-    *)
-      echo "unknown scenario: $scenario" >&2
-      exit 1
-      ;;
-  esac
+  rules=$(workload_rules "$scenario")
+  if [ "$rules" = "unknown" ]; then
+    echo "unknown scenario: $scenario" >&2
+    exit 1
+  fi
+
+  old_ifs=$IFS
+  IFS=,
+  set -- $rules
+  IFS=$old_ifs
+  for rule in "$@"; do
+    run_rule "$rule"
+  done
 }
 
 run_one_series() {
@@ -283,23 +344,13 @@ run_workload_case() {
       apply_disabled_rules "$workload"
       run_one_series "$workload" "$runner" "branch"
       elapsed_ms=$ELAPSED_MS
-      rules=$(case "$workload" in
-        create_delete) echo "file=open.rs -p,file=close.rs -p,file=unlink.rs -p" ;;
-        rename) echo "file=rename.rs -p" ;;
-        mkdir_rmdir) echo "file=mkdir.rs -p,file=rmdir.rs -p" ;;
-        *) echo "unknown" ;;
-      esac)
+      rules=$(workload_rules "$workload")
       ;;
     disabled)
       apply_disabled_rules "$workload"
       run_one_series "$workload" "$runner" "disabled"
       elapsed_ms=$ELAPSED_MS
-      rules=$(case "$workload" in
-        create_delete) echo "file=open.rs -p,file=close.rs -p,file=unlink.rs -p" ;;
-        rename) echo "file=rename.rs -p" ;;
-        mkdir_rmdir) echo "file=mkdir.rs -p,file=rmdir.rs -p" ;;
-        *) echo "unknown" ;;
-      esac)
+      rules=$(workload_rules "$workload")
       ;;
     *)
       echo "unknown WORKLOAD_MODE: $WORKLOAD_MODE" >&2
@@ -316,5 +367,8 @@ run_workload_case() {
 run_workload_case "create_delete" scenario_create_delete
 run_workload_case "rename" scenario_rename
 run_workload_case "mkdir_rmdir" scenario_mkdir_rmdir
+run_workload_case "pipe_comm" scenario_pipe_comm
+run_workload_case "fork_wait" scenario_fork_wait
+run_workload_case "fd_dup_close" scenario_dup_close
 
 echo "workload test finished"
