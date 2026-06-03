@@ -317,12 +317,7 @@ ensure_csv
 
 case "$BACKEND_MODE" in
   baseline)
-    if [ "$RUN_COUNT" -ne 0 ]; then
-      run_series "count" "baseline"
-    else
-      echo "RUN_COUNT is 0; nothing to do for baseline backend" >&2
-      exit 1
-    fi
+    run_series "log" "baseline"
     ;;
   branch)
     run_series "log" "branch"

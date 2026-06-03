@@ -1115,7 +1115,19 @@ macro_rules! dyndbg_debug {
         // No-op backend (neither feature enabled)
         #[cfg(not(any(feature = "dyndbg", feature = "branchdbg")))]
         {
-            // intentionally no-op
+            // Align compiler optimization behavior with the dyndbg backend:
+            // an empty asm block with the same options tells LLVM this code
+            // does not access memory or stack, matching the NOP5 path.
+            #[cfg(target_arch = "x86_64")]
+            {
+                #[allow(unsafe_code)]
+                // SAFETY: This empty asm block generates no instructions; it only
+                // provides optimization hints so the no-op path is not penalized
+                // relative to the static-patch path.
+                unsafe {
+                    core::arch::asm!("", options(nomem, nostack, preserves_flags));
+                }
+            }
         }
     }};
 }
@@ -1274,7 +1286,14 @@ macro_rules! dyndbg_debug_site {
         }
         #[cfg(not(any(feature = "dyndbg", feature = "branchdbg")))]
         {
-            // intentionally no-op
+            #[cfg(target_arch = "x86_64")]
+            {
+                #[allow(unsafe_code)]
+                // SAFETY: empty asm for compiler optimization alignment only.
+                unsafe {
+                    core::arch::asm!("", options(nomem, nostack, preserves_flags));
+                }
+            }
         }
     }};
 }
@@ -1417,7 +1436,14 @@ macro_rules! dyndbg_debug_func {
 
         #[cfg(not(any(feature = "dyndbg", feature = "branchdbg")))]
         {
-            // noop
+            #[cfg(target_arch = "x86_64")]
+            {
+                #[allow(unsafe_code)]
+                // SAFETY: empty asm for compiler optimization alignment only.
+                unsafe {
+                    core::arch::asm!("", options(nomem, nostack, preserves_flags));
+                }
+            }
         }
     }};
 }

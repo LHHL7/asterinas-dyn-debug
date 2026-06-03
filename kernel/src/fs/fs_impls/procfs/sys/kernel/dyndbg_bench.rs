@@ -3,7 +3,7 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use aster_util::printer::VmPrinter;
-use ostd::{sync::SpinLock, timer::Jiffies};
+use ostd::sync::SpinLock;
 
 use crate::{
     fs::{
@@ -160,29 +160,47 @@ fn parse_mode(value: &str) -> Result<BenchMode> {
 }
 
 fn execute_bench(mode: BenchMode, iters: u64) -> Result<()> {
-    let start = Jiffies::elapsed().as_duration();
+    let tsc_start = ostd::arch::read_tsc();
+    let tsc_freq = ostd::arch::tsc_freq();
+
+    // Force 64-byte cache-line alignment so the benchmark loop sits at
+    // the same alignment across all build configurations.
+    #[cfg(target_arch = "x86_64")]
+    {
+        #[allow(unsafe_code)]
+        // SAFETY: `.align 64` emits only alignment padding; no side effects.
+        unsafe {
+            core::arch::asm!(".align 64", options(nomem, nostack, preserves_flags));
+        }
+    }
 
     match mode {
         BenchMode::Log => {
             for _ in 0..iters {
-                bench_log();
+                core::hint::black_box(bench_log());
             }
         }
         BenchMode::LogBatch => {
             for _ in 0..iters {
-                bench_log_batch();
+                core::hint::black_box(bench_log_batch());
             }
         }
         BenchMode::Count => {
+            let mut counter: u64 = 0;
             for _ in 0..iters {
-                BENCH_COUNTER.fetch_add(1, Ordering::Relaxed);
+                core::hint::black_box(&mut counter);
+                counter += 1;
             }
+            core::hint::black_box(&mut counter);
         }
     }
 
-    let end = Jiffies::elapsed().as_duration();
-    let elapsed = end.checked_sub(start).unwrap_or_default();
-    let elapsed_us = elapsed.as_micros() as u64;
+    let tsc_end = ostd::arch::read_tsc();
+    let elapsed_us = if tsc_freq > 0 && tsc_end > tsc_start {
+        ((tsc_end - tsc_start) * 1_000_000) / tsc_freq
+    } else {
+        0 // TSC unavailable, fallback to 0 (should not happen on supported archs)
+    };
 
     let mut state = BENCH_STATE.lock();
     state.last_mode = mode;
@@ -192,8 +210,11 @@ fn execute_bench(mode: BenchMode, iters: u64) -> Result<()> {
     Ok(())
 }
 
+#[inline(never)]
 fn bench_log() {
     aster_logger::dyndbg_debug!("dyndbg bench log");
+    // Prevent LTO from eliminating this function when call sites are disabled.
+    core::hint::black_box(());
 }
 
 // Move bench callsites to a dedicated module to keep this file small.
