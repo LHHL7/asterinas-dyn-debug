@@ -8,7 +8,11 @@ macro_rules! gen_bench_logs {
     ($($name:ident => $msg:literal),* $(,)?) => {
         $(
             #[inline(never)]
-            fn $name() { aster_logger::dyndbg_debug_site!($msg, $msg); }
+            fn $name() {
+                aster_logger::dyndbg_debug_site!($msg, $msg);
+                // Prevent LTO from eliminating this function when call sites are disabled.
+                core::hint::black_box(());
+            }
         )*
 
         // Collect function pointers into a static slice for easy iteration.
@@ -20,7 +24,7 @@ macro_rules! gen_bench_logs {
         #[inline(never)]
         pub fn bench_log_batch() {
             for f in BENCH_FNS {
-                f();
+                core::hint::black_box(f());
             }
         }
     }
