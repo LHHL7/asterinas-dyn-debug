@@ -51,6 +51,7 @@ impl FileTable {
             }
 
             for idx in ceil_fd + 1..self.len() {
+                debug!("dyndbg: fd table scan");
                 if self.table.get(idx).is_none() {
                     return idx;
                 }

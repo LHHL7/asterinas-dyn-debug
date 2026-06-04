@@ -125,8 +125,8 @@ emit_result() {
   echo "RESULT $*"
 }
 
-now_ms() {
-  awk '{printf "%.0f", $1 * 1000}' /proc/uptime
+read_uptime() {
+  awk '{print $1}' /proc/uptime
 }
 
 prepare_workdir() {
@@ -269,7 +269,6 @@ run_one_series() {
   TASK_CLOCK_MS=na
   CONTEXT_SWITCHES=na
   PAGE_FAULTS=na
-  total_ms=0
   total_task_clock_ms=0
   total_context_switches=0
   total_page_faults=0
@@ -281,20 +280,20 @@ run_one_series() {
   if [ "$WARMUP" -gt 0 ]; then
     while [ "$i" -lt "$WARMUP" ]; do
       prepare_workdir
-      "$runner"
+      ( "$runner" )
       i=$((i + 1))
     done
   fi
+
+  # Single read before all runs (same approach as C-02/C-03, proven accurate)
+  start=$(read_uptime)
 
   i=1
   while [ "$i" -le "$RUNS" ]; do
     prepare_workdir
     collect_soft_metrics_begin
-    start_ms=$(now_ms)
-    "$runner"
-    end_ms=$(now_ms)
+    ( "$runner" )
     collect_soft_metrics_end
-    total_ms=$((total_ms + end_ms - start_ms))
     if [ "$TASK_CLOCK_MS" != "na" ]; then
       total_task_clock_ms=$((total_task_clock_ms + TASK_CLOCK_MS))
       task_clock_ok=1
@@ -310,7 +309,9 @@ run_one_series() {
     i=$((i + 1))
   done
 
-  ELAPSED_MS=$((total_ms / RUNS))
+  end=$(read_uptime)
+
+  ELAPSED_MS=$(awk -v s="$start" -v e="$end" -v r="$RUNS" 'BEGIN{printf "%.0f", (e-s)*1000/r}')
   if [ "$task_clock_ok" -ne 0 ]; then
     TASK_CLOCK_MS=$((total_task_clock_ms / RUNS))
   else

@@ -541,6 +541,7 @@ impl PathResolver {
         let (mut current_path, mut relative_path) = (parent.clone(), relative_path);
 
         while !relative_path.is_empty() {
+            debug!("dyndbg: path component walk");
             let (next_name, path_remain, target_is_dir) =
                 if let Some((prefix, suffix)) = relative_path.split_once('/') {
                     let suffix = suffix.trim_start_matches('/');

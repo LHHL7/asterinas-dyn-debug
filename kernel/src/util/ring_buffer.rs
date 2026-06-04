@@ -334,6 +334,7 @@ impl<R: Deref<Target = RingBuffer<u8>>> Producer<u8, R> {
 
         let write_len = if offset + free_len > rb.capacity {
             // Write into two separate parts
+            debug!("dyndbg: ring buffer two-part write");
             let mut write_len = 0;
 
             let mut writer = rb.segment.writer();
