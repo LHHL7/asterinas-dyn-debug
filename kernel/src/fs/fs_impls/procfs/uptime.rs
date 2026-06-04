@@ -41,7 +41,7 @@ impl UptimeFileOps {
             .as_duration()
             .as_secs_f32();
 
-        writeln!(printer, "{:.2} {:.2}", uptime, idle_time)?;
+        writeln!(printer, "{:.6} {:.6}", uptime, idle_time)?;
         Ok(())
     }
 }
