@@ -15,7 +15,7 @@ OVMF ?= on
 RELEASE ?= 0
 RELEASE_LTO ?= 0
 LOG_LEVEL ?= error
-SYSCALL_LOG ?= on
+SYSCALL_INFO ?= on
 SCHEME ?= ""
 SMP ?= 1
 OSTD_TASK_STACK_SIZE_IN_PAGES ?= 64
@@ -90,7 +90,7 @@ CARGO_OSDK_COMMON_ARGS := --target-arch=$(OSDK_TARGET_ARCH)
 # The build arguments also apply to the `cargo osdk run` command.
 CARGO_OSDK_BUILD_ARGS := --kcmd-args="ostd.log_level=$(LOG_LEVEL)"
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="console=$(CONSOLE)"
-CARGO_OSDK_BUILD_ARGS += --kcmd-args="syscall_log=$(SYSCALL_LOG)"
+CARGO_OSDK_BUILD_ARGS += --kcmd-args="syscall_info=$(SYSCALL_INFO)"
 CARGO_OSDK_TEST_ARGS :=
 
 ifeq ($(AUTO_TEST), syscall)

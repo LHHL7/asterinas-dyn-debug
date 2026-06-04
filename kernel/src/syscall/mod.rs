@@ -343,13 +343,13 @@ use dispatch_fn_inner;
 use impl_syscall_nums_and_dispatch_fn;
 use syscall_handler;
 
-static SYSCALL_LOG_ENABLED: AtomicBool = AtomicBool::new(true);
-//解析命令行参数，设置SYSCALL_LOG_ENABLED的值
-aster_cmdline::define_flag_param!("syscall_log", SYSCALL_LOG_ENABLED);
+static SYSCALL_INFO_ENABLED: AtomicBool = AtomicBool::new(true);
+//解析命令行参数，设置SYSCALL_INFO_ENABLED的值
+aster_cmdline::define_flag_param!("syscall_info", SYSCALL_INFO_ENABLED);
 
 pub fn is_syscall_log_enabled() -> bool {
     //原子读
-    SYSCALL_LOG_ENABLED.load(Ordering::Relaxed)
+    SYSCALL_INFO_ENABLED.load(Ordering::Relaxed)
 }
 
 pub struct SyscallArgument {
