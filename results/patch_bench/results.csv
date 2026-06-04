@@ -1,0 +1,3 @@
+run_id,case,patch_backend,patch_mode,patch_iters,expected_behavior,actual_behavior,status,elapsed_s,enable_elapsed_s,clear_elapsed_s,modules_repatched,sites_patched,patch_transactions
+20260604_032027,P-02-per-site,per_site,toggle,1000,patch-transaction-completes,patch-transaction-completes,pass,5.289818,0.784558,0.774587,4000,130000,130000
+20260604_032027,P-02-batch,batch,toggle,1000,patch-transaction-completes,patch-transaction-completes,pass,5.091621,0.748716,0.739802,4000,130000,4000

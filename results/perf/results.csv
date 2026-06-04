@@ -1,0 +1,4 @@
+run_id,state,mode,expected_behavior,actual_behavior,status,iters,runs,avg_us,min_us,max_us,mode_label,task_clock_ms,context_switches,page_faults
+20260603_101938,baseline,log,baseline,baseline,pass,10000000,50,9355,9147,10294,log,0,45,990
+20260603_105206,disabled,log,disabled,disabled,pass,10000000,50,9450,9011,10445,log,na,42,1010
+20260603_102130,branch,log,branch,branch,pass,10000000,50,9625,8985,10662,log,0,42,990
