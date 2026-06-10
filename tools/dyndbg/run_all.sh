@@ -1,5 +1,11 @@
 #!/bin/sh
-# Test: run all dyndbg cases in guest
+# Test: run same-build dyndbg cases in guest
+#
+# This script covers tests that share one build command:
+#   make run_kernel LOG_LEVEL=debug SYSCALL_INFO=off RELEASE=1 MEM=16G
+#
+# Tests requiring other builds (different FEATURES, no RELEASE, SMP=4) must be
+# run separately from their own guest sessions.
 set -eu
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
@@ -17,14 +23,10 @@ fi
 export RESULTS_DIR RUN_ID COMMIT
 
 RUN_FUNCTIONAL=${RUN_FUNCTIONAL:-1}
-RUN_INCREMENTAL=${RUN_INCREMENTAL:-1}
+RUN_INDEX_ABLATION=${RUN_INDEX_ABLATION:-1}
 RUN_PERF=${RUN_PERF:-1}
 RUN_WORKLOAD=${RUN_WORKLOAD:-1}
 RUN_PATCH_BENCH=${RUN_PATCH_BENCH:-1}
-RUN_SCALE=${RUN_SCALE:-1}
-RUN_CONCURRENCY=${RUN_CONCURRENCY:-1}
-RUN_STRESS=${RUN_STRESS:-1}
-RUN_PATCH_STORM=${RUN_PATCH_STORM:-1}
 
 run_script() {
   name=$1
@@ -45,8 +47,8 @@ if [ "$RUN_FUNCTIONAL" -ne 0 ]; then
   run_script "functional" "$SCRIPT_DIR/functional.sh"
 fi
 
-if [ "$RUN_INCREMENTAL" -ne 0 ]; then
-  run_script "incremental" "$SCRIPT_DIR/incremental.sh" env
+if [ "$RUN_INDEX_ABLATION" -ne 0 ]; then
+  run_script "index_ablation" "$SCRIPT_DIR/index_ablation.sh"
 fi
 
 if [ "$RUN_PERF" -ne 0 ]; then
@@ -59,22 +61,6 @@ fi
 
 if [ "$RUN_PATCH_BENCH" -ne 0 ]; then
   run_script "patch_bench" "$SCRIPT_DIR/patch_bench.sh"
-fi
-
-if [ "$RUN_SCALE" -ne 0 ]; then
-  run_script "scale" "$SCRIPT_DIR/scale.sh"
-fi
-
-if [ "$RUN_CONCURRENCY" -ne 0 ]; then
-  run_script "concurrency" "$SCRIPT_DIR/concurrency.sh"
-fi
-
-if [ "$RUN_STRESS" -ne 0 ]; then
-  run_script "stress" "$SCRIPT_DIR/stress.sh"
-fi
-
-if [ "$RUN_PATCH_STORM" -ne 0 ]; then
-  run_script "patch_storm" "$SCRIPT_DIR/patch_storm.sh"
 fi
 
 echo "all tests finished"

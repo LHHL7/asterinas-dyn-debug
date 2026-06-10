@@ -6,8 +6,8 @@ PROC=/proc/sys/kernel/dynamic_debug
 BENCH=/proc/sys/kernel/dyndbg_bench
 
 MODULE_KEY=${MODULE_KEY:-dyndbg_bench}
-ITERS=${ITERS:-100000}
-RUNS=${RUNS:-5}
+ITERS=${ITERS:-10000000}
+RUNS=${RUNS:-50}
 WARMUP=${WARMUP:-2}
 RUN_COUNT=${RUN_COUNT:-1}
 ENABLE_LOG=${ENABLE_LOG:-0}
