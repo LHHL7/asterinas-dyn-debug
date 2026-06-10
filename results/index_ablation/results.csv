@@ -1,0 +1,9 @@
+run_id,case,index_state,selector,update_iters,elapsed_s,descriptors_recomputed,modules_repatched,sites_patched,status
+20260610_075011,I-02-index-on-line,on,"line=232 -p",10000,0.150742,20000,0,0,pass
+20260610_075011,I-02-index-off-line,off,"line=232 -p",10000,0.148101,20000,0,0,pass
+20260610_075011,I-02-index-on-file,on,"file=dyndbg_bench.rs -p",10000,0.305557,20000,0,0,pass
+20260610_075011,I-02-index-off-file,off,"file=dyndbg_bench.rs -p",10000,0.479919,20000,0,0,pass
+20260610_075011,I-02-index-on-func,on,"func=bench_log_0 -p",10000,0.447220,20000,0,0,pass
+20260610_075011,I-02-index-off-func,off,"func=bench_log_0 -p",10000,0.532623,20000,0,0,pass
+20260610_075011,I-02-index-on-module,on,"module=dyndbg_bench -p",10000,0.438935,1300000,0,0,pass
+20260610_075011,I-02-index-off-module,off,"module=dyndbg_bench -p",10000,0.523910,1300000,0,0,pass

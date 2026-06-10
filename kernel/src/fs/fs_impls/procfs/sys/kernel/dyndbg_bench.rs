@@ -78,10 +78,11 @@ impl FileOps for DyndbgBenchFileOps {
         writeln!(printer, "last_iters={}", state.last_iters)?;
         writeln!(printer, "last_duration_us={}", state.last_duration_us)?;
         writeln!(printer, "backend={}", aster_logger::get_dyndbg_patch_backend().as_str())?;
+        writeln!(printer, "index={}", if aster_logger::get_dyndbg_index_enabled() { "on" } else { "off" })?;
         writeln!(printer, "counter={}", counter)?;
         writeln!(
             printer,
-            "usage: backend=per_site|batch | mode=log|log_batch|count iters=<n> (e.g., mode=log iters=1000000)"
+            "usage: backend=per_site|batch index=on|off mode=log|log_batch|count iters=<n> (e.g., mode=log iters=1000000)"
         )?;
 
         Ok(printer.bytes_written())
@@ -106,12 +107,15 @@ impl FileOps for DyndbgBenchFileOps {
 fn run_bench(command: &str) -> Result<()> {
     // 检查命令格式，解析出mode和iters参数
     let mut backend = None;
+    let mut index_enabled = None;
     let mut mode = None;
     let mut iters = None;
 
     for token in command.split_ascii_whitespace() {
         if let Some(value) = token.strip_prefix("backend=") {
             backend = Some(parse_backend(value)?);
+        } else if let Some(value) = token.strip_prefix("index=") {
+            index_enabled = Some(parse_index(value)?);
         } else if let Some(value) = token.strip_prefix("mode=") {
             mode = Some(parse_mode(value)?);
         } else if let Some(value) = token.strip_prefix("iters=") {
@@ -131,6 +135,10 @@ fn run_bench(command: &str) -> Result<()> {
         aster_logger::set_dyndbg_patch_backend(backend);
     }
 
+    if let Some(enabled) = index_enabled {
+        aster_logger::set_dyndbg_index_enabled(enabled);
+    }
+
     if mode.is_none() && iters.is_none() {
         return Ok(());
     }
@@ -146,6 +154,15 @@ fn parse_backend(value: &str) -> Result<aster_logger::DyndbgPatchBackend> {
         "per_site" | "persite" => Ok(aster_logger::DyndbgPatchBackend::PerSite),
         "batch" => Ok(aster_logger::DyndbgPatchBackend::Batch),
         _ => return_errno_with_message!(Errno::EINVAL, "backend must be per_site or batch"),
+    }
+}
+
+// 解析索引开关参数，支持on和off两种模式
+fn parse_index(value: &str) -> Result<bool> {
+    match value {
+        "on" => Ok(true),
+        "off" => Ok(false),
+        _ => return_errno_with_message!(Errno::EINVAL, "index must be on or off"),
     }
 }
 

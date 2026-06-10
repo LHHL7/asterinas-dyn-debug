@@ -68,6 +68,19 @@ pub fn get_dyndbg_patch_backend() -> DyndbgPatchBackend {
     DyndbgPatchBackend::from_u8(DYNDBG_PATCH_BACKEND.load(Ordering::Relaxed))
 }
 
+/// When `false`, the index-based candidate collection is bypassed and replaced
+/// with a linear scan of all descriptors. This is an ablation hook for
+/// measuring the performance contribution of the multi-dimensional index.
+static DYNDBG_INDEX_ENABLED: AtomicBool = AtomicBool::new(true);
+
+pub fn set_dyndbg_index_enabled(enabled: bool) {
+    DYNDBG_INDEX_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+pub fn get_dyndbg_index_enabled() -> bool {
+    DYNDBG_INDEX_ENABLED.load(Ordering::Relaxed)
+}
+
 struct ModuleState {
     enabled_count: AtomicU32,
 }
@@ -411,6 +424,15 @@ impl DyndbgState {
     //单条规则来收集候选集
     //根据rule的各个selector在对应的索引表里查找匹配的descriptor列表，并取交集得到最终的候选列表
     fn collect_candidates_for_rule(&self, rule: &DyndbgRule) -> Vec<&'static DebugDescriptor> {
+        // Ablation path: bypass index, linear-scan all descriptors.
+        if !get_dyndbg_index_enabled() {
+            return all_descriptors()
+                .into_iter()
+                .filter(|descriptor| rule.matches_descriptor(descriptor))
+                .collect();
+        }
+
+        // Normal path: index-based candidate collection.
         let mut candidates: Option<Vec<&'static DebugDescriptor>> = None;
 
         if let Some(file_keyword) = &rule.file_keyword {
