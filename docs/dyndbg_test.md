@@ -2,21 +2,21 @@
 
 ## 1. 文档目标
 
-本文档用于验证 Asterinas Dynamic Debug System 的：
+本文档为 Asterinas Dynamic Debug System 的**最终测试报告**，覆盖以下验证维度：
 
-1. 功能正确性
-2. 运行时动态切换正确性
-3. Static Patch 热路径优化效果
-4. Batch Patch Transaction 效果
-5. SMP-safe Runtime Patch 稳定性
+1. 功能正确性（F 系列）
+2. 增量重算正确性（I-01）与索引消融（I-02）
+3. 性能基准 —— 微基准 + 真实 workload（P 系列，含 P-01R）
+4. Batch Patch Transaction 效果（P-02）
+5. SMP 并发稳定性（C 系列）
 6. 系统边界与已知限制
 
 本文档同时作为：
 
-- 测试执行指南
-- Benchmark 执行规范
-- 数据记录模板
-- 最终测试报告基础
+- 测试执行指南（编译命令 + 测试命令）
+- Benchmark 执行规范（参数约束 + 判定标准）
+
+结构化测试数据存放于 `results/` 目录，详见第 9 节。
 
 ---
 
@@ -26,35 +26,62 @@
 
 | 项目 | 内容 |
 | --- | --- |
-| 设备名 | WIN-49IU2922R58 |
-| CPU | Intel(R) Core(TM) i5-10500H @ 2.50GHz |
-| 核心数 | 未提供（后补） |
-| 内存 | 16.0 GB（可用 15.8 GB） |
-| 存储 | 477 GB SATA SSD；932 GB HDD（WDC WD10SPZX-22Z10T1） |
-| 显卡 | NVIDIA GeForce GTX 1650 Ti（4 GB）；Intel UHD Graphics（128 MB） |
-| 宿主机系统 | Windows 64-bit + WSL（docker-desktop） |
+| 设备 | 远程服务器（Docker 容器 `asterinas-dev`） |
+| CPU | Intel(R) Core(TM) i9-7900X @ 3.30GHz（10 核 20 线程，1 Socket） |
+| 内存 | 46 GiB（Docker 可用 46.7 GiB） |
+| 存储 | 222 GB NVMe SSD |
+| 系统 | Ubuntu 24.04.4 LTS，kernel 6.14.0-27-generic |
 
 ### 2.2 虚拟化环境
 
 | 项目 | 内容 |
 | --- | --- |
-| QEMU 版本 | 通过 `make run_kernel`（WSL + docker-desktop），版本待补 |
-| SMP 核数 | 4 |
-| 启动参数 | `make run_kernel ENABLE_KVM=0 SMP=4 INITRAMFS_SKIP_GZIP=1` |
+| QEMU 版本 | 通过 `make run_kernel`（Docker 容器），版本待补 |
+| 内存 | 16G（`MEM=16G`） |
+| 编译模式 | release（`RELEASE=1`，I 系列除外） |
 
-推荐固定参数：
+**通用固定参数**：`LOG_LEVEL=debug SYSCALL_INFO=off`。
+
+- `LOG_LEVEL=debug`：必须，`dyndbg_debug!` 走 `log::debug!`，低于此级别不会触发日志输出。
+- `SYSCALL_INFO=off`：关闭 `info!` 级别的 syscall 入口/出口追踪（`kernel/src/syscall/mod.rs`），避免每次系统调用产生海量 `info` 日志污染串口、干扰 benchmark 计时。**不影响 `dyndbg_debug!`（走 `debug` 级别）。**
+
+**SMP 和 RELEASE 按测试类别区分**：
+
+| 测试系列 | SMP | RELEASE | 原因 |
+|----------|-----|---------|------|
+| F（功能） | 1（默认） | 1 | 单线程串行，release 即可 |
+| I-01（增量重算） | 1（默认） | **不可用** | stats 计数器依赖非 release 构建的断言/检查 |
+| I-02（索引消融） | 1（默认） | 1 | 使用 uptime 计时 + 原子计数器，无 debug 断言依赖 |
+| P（性能） | **1** | 1 | 单线程基准，多核引入调度抖动干扰计时 |
+| C（并发） | **4** | 1 | 多核并发 patching 是 C 系列的核心测试目标 |
+
+**同构建分组**：以下用例共用同一编译命令，可通过 `/test/dyndbg/run_all.sh` 一键执行：
 
 ```bash
-qemu-system-x86_64 -smp 4 -m 4G
+make run_kernel LOG_LEVEL=debug SYSCALL_INFO=off RELEASE=1 MEM=16G
+# guest 内：
+/test/dyndbg/run_all.sh
 ```
 
-当前项目用于 dynamic debug 测试的常用启动命令：
+| 用例 | 测试内容 |
+|------|---------|
+| F-01~F-08 | 功能正确性 |
+| I-02 | 多维度索引消融 |
+| P-01（disabled） | 微基准 disabled path |
+| P-01R（disabled） | 真实 workload disabled path |
+| P-02 | batch patch 开销 |
 
-```bash
-make run_kernel ENABLE_KVM=0 SMP=4 INITRAMFS_SKIP_GZIP=1 LOG_LEVEL=debug SYSCALL_LOG=off
-```
+**需单独编译启动的用例**：
 
-相关配置参数说明：`LOG_LEVEL=debug` 仍然是 dynamic debug 的功能测试所需，因为 `dyndbg_debug!` 走的是 `debug` 级别；`SYSCALL_LOG=off` 作为测试默认值，避免系统调用入口追踪干扰 dynamic debug、patch timing 和并发压测；如需单独验证 syscall 入口追踪，可另开一组测试。FPU save/load 与未实现 syscall 的噪声已在源码侧降噪，不需要靠更低的全局 log level 来屏蔽。I 系列的统计型测试默认不传 `LOG_LEVEL`，以 `warn` 级别运行即可，目的是压低 DEBUG 噪声并减少串口阻塞风险，不影响 I-01 读取 `/proc/sys/kernel/dyndbg_stats` 得到的重算统计结果，也不影响其“全量重算 vs 增量重算”的判定价值。
+| 用例 | 编译命令差异 |
+|------|------------|
+| I-01 | 不可使用 `RELEASE=1` |
+| P-01（baseline） | `NO_DEFAULT_FEATURES=1 FEATURES=cvm_guest` |
+| P-01（branch） | `NO_DEFAULT_FEATURES=1 FEATURES=cvm_guest,branchdbg` |
+| P-01R（baseline/branch） | 同上 |
+| C-01~C-03 | `SMP=4` |
+
+`LOG_LEVEL=debug` 对 I 系列非强制——I-01 只读 `/proc/sys/kernel/dyndbg_stats`，以 `warn` 级别运行可压低 DEBUG 噪声、减少串口阻塞，不影响统计结果。
 
 测试结果收集说明：`tools/dyndbg/*.sh` 会被打包进 initramfs，guest 启动后可直接在 shell 里执行 `/test/dyndbg/*.sh`。当前内核不支持 9P，因此结果会优先尝试写到 `/results`，失败后回退到 `/ext2/results`。测试结束后，使用 `tools/dyndbg/collect_results.sh` 把 ext2 镜像里的结果同步回宿主机的 `results/` 目录。
 
@@ -65,7 +92,7 @@ make run_kernel ENABLE_KVM=0 SMP=4 INITRAMFS_SKIP_GZIP=1 LOG_LEVEL=debug SYSCALL
 收集结果的示例：
 
 ```bash
-make run_kernel ENABLE_KVM=0 SMP=4 INITRAMFS_SKIP_GZIP=1 LOG_LEVEL=debug SYSCALL_LOG=off
+make run_kernel LOG_LEVEL=debug SYSCALL_INFO=off RELEASE=1 MEM=16G
 
 # 同步结果
 sync；umount /ext2
@@ -74,40 +101,34 @@ sync；umount /ext2
 sh tools/dyndbg/collect_results.sh
 ```
 
-说明：正式数据测试的服务器环境信息留空，后续补充。
+说明：正式测试在上述远程服务器 Docker 容器（`asterinas-dev`）内执行。
 
 ### 2.3 编译环境
 
 | 项目 | 内容 |
 | --- | --- |
-| Rust 版本 | |
-| 编译模式 | release |
-| 编译参数 | |
+| Rust 版本 | nightly-2025-12-06（见 `rust-toolchain.toml`） |
+| 编译模式 | release（`RELEASE=1`），I 系列除外 |
+| 内存 | `MEM=16G` |
 
-建议：
+所有测试通过 `make run_kernel` 构建并启动 QEMU guest，无需单独 `cargo build`。
 
-```bash
-cargo build --release
-```
-
-### 2.4 测试 Commit
-
-| 阶段 | Commit | 说明 |
-| --- | --- | --- |
-| baseline |295929d | 原始日志系统 |
-| descriptor |06b5481| descriptor fast path |
-| module gate |29e1465| module-level gate |
-| static patch |b58b40b | call-site static patch |
-| batch patch |febca80 | batch transaction |
-
-建议打 tag：
+**三组 P 系列编译命令**：
 
 ```bash
-git tag phase1-descriptor
-git tag phase2-module-gate
-git tag phase3-static-patch
-git tag phase4-batch-patch
+# baseline（dyndbg 编译期消除）
+make run_kernel LOG_LEVEL=debug SYSCALL_INFO=off RELEASE=1 MEM=16G \
+  NO_DEFAULT_FEATURES=1 FEATURES=”cvm_guest”
+
+# branch（branch gate，无 static patch）
+make run_kernel LOG_LEVEL=debug SYSCALL_INFO=off RELEASE=1 MEM=16G \
+  NO_DEFAULT_FEATURES=1 FEATURES=”cvm_guest,branchdbg”
+
+# disabled（static patch 站点存在，运行时 -p 禁用）
+make run_kernel LOG_LEVEL=debug SYSCALL_INFO=off RELEASE=1 MEM=16G
 ```
+
+说明：`NO_DEFAULT_FEATURES=1` 关闭默认 features（含 `dyndbg`），再通过 `FEATURES` 精确指定要启用的 feature。disabled build 不传额外参数，走默认 `cvm_guest + dyndbg`。
 
 ---
 
@@ -184,8 +205,10 @@ module 匹配的是 Rust 的 module_path，而不是 log target。
 | F-06 | 动态切换即时性 | clear; module=mm +p; clear | enable 立即生效，clear 立即失效 | 避免规则叠加 |
 | F-07 | 非法输入鲁棒性 | ++++; line=abc; func=== | 返回错误且不崩溃 | 记录 errno |
 | F-08 | 多层规则覆盖 | module=mm +p; file=mm/ +p; func=alloc -p; line=123 +p | last-match-wins 生效 | 多层冲突覆盖 |
-| I-01 | 增量重算正确性 | module=sched +p | 记录 descriptors_recomputed、modules_repatched、sites_patched，验证增量重算相对全量重算更小 | 依赖 stats 接口 |
-| P-01 | Disabled fast path | 同一 commit 下的三构建对比 | branches/branch-misses 下降 | 禁止串口输出 |
+| I-01 | 增量重算正确性与延迟 | module=sched +p | 记录 descriptors_recomputed、modules_repatched、sites_patched、last_update_latency_us，从计数和延迟两个维度验证增量重算优于全量重算 | 依赖 stats 接口 |
+| I-02 | 多维度索引消融 | 同一内核 index=on/off 对比，line/file/func/module 四维度 `-p` | index=on 候选收集延迟低于 index=off（file/func/module 16-36%），line 接近（BTreeMap 点查 vs 线性扫描在当前规模下持平） | 使用 `-p` 消除 patching 噪声，仅测量候选收集路径 |
+| P-01 | Disabled fast path（微基准） | dyndbg_bench 紧凑循环，三构建对比 | `baseline ≈ disabled < branch` | TSC 计时，禁止串口输出 |
+| P-01R | Disabled fast path（真实 workload） | 6 类 syscall 场景，三构建对比 | `baseline ≈ disabled < branch` | 覆盖 FS/IPC/进程/fd 子系统 |
 | P-02 | Batch patch 开销 | 同一内核下 per-site vs batch | batch patch 更快 | 单次脚本自动跑两轮 |
 | C-01 | 并发 patch 稳定性 | 规则切换并发（module=$MODULE_KEY +p） | 无 panic/crash/死锁 | 验证规则切换稳定性 |
 | C-02 | 高频 patch 压测 | 1e5 次 enable/disable | 系统稳定 | 记录耗时 |
@@ -204,7 +227,9 @@ Case 与章节对应关系：
 | F-07 | 4.7 非法输入鲁棒性测试 |
 | F-08 | 4.8 多层规则覆盖测试 |
 | I-01 | 5.1 增量重算正确性 |
+| I-02 | 5.2 多维度索引消融 |
 | P-01 | 6.1 Disabled Fast Path Benchmark |
+| P-01R | 6.1.1 Real Workload Supplement |
 | P-02 | 6.2 Batch Patch Transaction Benchmark |
 | C-01 | 7.1 规则切换并发 |
 | C-02 | 7.2 高频 Patch Stress |
@@ -213,6 +238,13 @@ Case 与章节对应关系：
 ---
 
 ## 4. 功能正确性测试
+
+F 系列与 P 系列 disabled 共用同一 build（默认 features，dyndbg 启用）：
+
+```bash
+make run_kernel LOG_LEVEL=debug SYSCALL_INFO=off RELEASE=1 MEM=16G
+```
+
 F 系列主要是验证 selector 语义和规则链行为，不是性能压测；因此正式执行时不需要很大的 `ITERS`。建议默认使用 `ITERS=100`，既能覆盖每个测例的规则操作和日志输出链路，又不会让验证过程过长。
 
 建议使用脚本：`/test/dyndbg/functional.sh`
@@ -251,7 +283,6 @@ module=mm +p
 - 目标 descriptor 被命中并通过 bench 判定为 enabled
 - 其他模块不受该 selector 影响
 
-**实际结果**：待填写
 
 ---
 
@@ -267,7 +298,6 @@ file=mm/ +p
 - 目标 descriptor 被命中并通过 bench 判定为 enabled
 - file selector 对应的目标范围生效
 
-**实际结果**：待填写
 
 ---
 
@@ -283,7 +313,6 @@ func=alloc_ +p
 - 目标 descriptor 被命中并通过 bench 判定为 enabled
 - function selector 对应的目标范围生效
 
-**实际结果**：待填写
 
 ---
 
@@ -299,7 +328,6 @@ line=123 +p
 - 目标 descriptor 被命中并通过 bench 判定为 enabled
 - line selector 对应的精确行号生效
 
-**实际结果**：待填写
 
 ---
 
@@ -318,7 +346,6 @@ func=alloc -p
 
 交换顺序验证覆盖关系。
 
-**实际结果**：待填写
 
 ---
 
@@ -329,7 +356,6 @@ func=alloc -p
 - clear 后 bench 判定为 disabled
 - 连续切换时规则状态与 bench 结果保持一致
 
-**实际结果**：待填写
 
 ---
 
@@ -348,7 +374,6 @@ func===
 - 非法输入不会新增规则
 - 不 panic、不 crash
 
-**实际结果**：待填写
 
 ---
 
@@ -369,11 +394,16 @@ line=123 +p
 - 通过 bench 状态验证最终规则覆盖结果
 - last-match-wins 在多层规则下保持稳定
 
-**实际结果**：待填写
 
 
 
 ## 5. 增量更新测试
+
+**I 系列不可使用 `RELEASE=1`**（stats 计数器依赖非 release 构建的断言/检查）。
+
+```bash
+make run_kernel LOG_LEVEL=debug SYSCALL_INFO=off MEM=16G
+```
 
 ### 5.1 增量重算正确性 (I-01)
 
@@ -387,6 +417,7 @@ struct DynDbgStats {
     descriptors_recomputed: usize,
     modules_repatched: usize,
     sites_patched: usize,
+    last_update_latency_us: u64,
 }
 ```
 
@@ -403,6 +434,7 @@ struct DynDbgStats {
 - selectorless 规则触发全量重算
 - module 规则触发显著更小的重算规模
 - `descriptors_recomputed`、`modules_repatched`、`sites_patched` 都会被记录，其中 `descriptors_recomputed` 是主判据，后两项是辅助观测值
+- `last_update_latency_us` 记录最近一次规则更新（含重算 + patch）的端到端 TSC 延迟（微秒），增量重算延迟应显著低于全量重算（典型值：全量 ~2500μs vs 增量 ~300μs，约 9x）
 - 采用 `warn` 仅降低日志噪声，不改变 `descriptors_recomputed`、`modules_repatched`、`sites_patched` 的统计值，也不改变 I-01 的测试结论
 建议使用脚本：`/test/dyndbg/incremental.sh`
 
@@ -413,9 +445,52 @@ struct DynDbgStats {
 /test/dyndbg/incremental.sh
 ```
 
-说明：CSV 会输出 full / module 的 descriptor、module、site 统计字段，便于同时观察增量重算和模块级 patch 行为；I-01 的主判据仍是 descriptor 重算是否比 full 更小。
+说明：CSV 会输出 full / module 的 descriptor、module、site、latency_us 统计字段（含 `full_latency_us` 和 `module_latency_us`），同时从计数和延迟两个维度衡量增量重算效果；I-01 的主判据是 descriptor 重算数量是否比 full 更小，延迟作为辅助判据。
 
-**实际结果**：待填写
+### 5.2 多维度索引消融 (I-02)
+
+**目标**：通过关闭索引（退化为线性扫描），测量多维度索引对候选收集阶段的加速贡献。
+
+**原理**：
+- 系统维护 file/module/function/line 四维 BTreeMap 索引，规则更新时通过索引定位受影响 descriptor 集合
+- 通过 `/proc/sys/kernel/dyndbg_bench` 的 `index=on|off` 开关，可将候选收集切换为全量 descriptor 线性扫描
+- 与 I-01 不同，I-02 测量的是"候选收集"阶段的纯粹差异，而非 descriptor 重算粒度
+- 使用 `-p`（disable）替代 `+p`，消除静态修补（NOP↔JMP）噪声：所有 descriptor 默认禁用，`-p` 保持禁用态，不触发状态迁移，无指令修补
+
+**索引实现细节**：
+- `file_index` / `module_index` / `function_index`：遍历全部 BTreeMap key 做子串匹配（`contains`），复杂度 O(num_unique_keys)，非真正 O(log N) 点查
+- `line_index`：真正 BTreeMap `get()` 点查，复杂度 O(log N)
+- 消融路径（`index=off`）：`all_descriptors().filter(rule.matches_descriptor)`，复杂度 O(all_descriptors)
+
+**前置要求**：
+- 内核编译时包含 `dyndbg` feature（默认）
+- `/proc/sys/kernel/dyndbg_bench` 支持 `index=on|off` 控制
+- `dyndbg_bench` 模块包含 65 个 descriptor，覆盖 four selector 维度
+
+**步骤**：
+1. 以默认 `LOG_LEVEL=debug` 编译启动（`-p` 不触发日志输出，无干扰）
+2. guest 内执行 `/test/dyndbg/index_ablation.sh`
+3. 脚本自动在 `index=on` 和 `index=off` 下各跑四组 selector：`line=N -p`、`file=dyndbg_bench.rs -p`、`func=bench_log_0 -p`、`module=dyndbg_bench -p`，每轮 `INDEX_ITERS` 次（默认 10000）
+4. 每次迭代执行 `selector -p` + `clear`，规则从空状态开始，清除累积效应
+
+**预期**：
+- `sites_patched` 全部为 0，确认无 patching 噪声混入
+- `descriptors_recomputed` 在 index=on 和 index=off 下相等，确认工作负载一致
+- `file` / `func` / `module` 三个 key-scan 维度：`index=on` elapsed 低于 `index=off`（16-36%），收益来自将扫描从全体 descriptor（284）缩减为唯一 key 集合
+- `line` 维度（真 BTreeMap 点查）：两者接近，当前 284-descriptor 规模下 BTreeMap 指针跳转的 cache 开销抵消了 O(log N) 优势
+- 随 descriptor 规模增长，全部维度的索引收益将线性放大
+
+**建议使用脚本**：`/test/dyndbg/index_ablation.sh`
+
+```bash
+# 快速参数档：
+INDEX_ITERS=1000 /test/dyndbg/index_ablation.sh
+# 正式档：
+/test/dyndbg/index_ablation.sh
+```
+
+结果 CSV 路径：`results/index_ablation/results.csv`
+
 
 ---
 
@@ -447,6 +522,40 @@ struct DynDbgStats {
 - disabled path cycles 不高于 baseline 的 1.1x
 - static patch 相比 descriptor 应降低 branches/branch-misses
 - 若趋势相反，标记为 review 并记录原因
+
+#### 三组构建的消融关系
+
+P 系列的三组构建并非三种并列的编译配置，而是构成一条干净的**模块消融链**（module-level ablation chain）。其中 branch 的定位不是"另一个功能选项"，而是**为了量化静态指令修补优化贡献而刻意保留的系统中间态**。
+
+三组构建包含的组件差异：
+
+| 构建 | 描述符 + 静态注册 | 规则链 + 索引 + 增量重算 | 模块级门控 | Static Patch（NOP↔JMP） | 批量修补事务 |
+|------|:---:|:---:|:---:|:---:|:---:|
+| baseline | | | | | |
+| branch | ✅ | ✅ | ✅ | | |
+| disabled (patch build) | ✅ | ✅ | ✅ | ✅ | ✅ |
+
+三组构建的角色定位：
+
+| 构建 | 消融角色 |
+|------|---------|
+| baseline | **绝对下限**：编译期完全消除，所有调用点直接消失 |
+| branch | **静态修补优化的消融对照**：保留描述符 + 运行时过滤引擎 + 模块门控，但用软件分支判断替代指令修补。与 disabled 的唯一差异是 static patch 的有无 |
+| disabled（patch build） | **最终实现的性能基线**：完整系统，static patch 站点运行时常驻但被规则禁用 |
+
+消融链：
+
+```
+baseline ──(+描述符+过滤引擎+模块门控)──→ branch ──(+static patch+批量修补)──→ disabled
+   ↑                                         ↑                                    ↑
+   编译期消除                           软件分支判断                        硬件 NOP/JMP 短路
+```
+
+核心判据：
+
+- `baseline ≈ disabled < branch` 成立 → static patch 有效消除了分支判断开销，将禁用路径压至接近编译期消除
+- `disabled - branch` 的差值是 **static patch + 批量修补的整体贡献**（模块门控在两组中均存在，已从差值中抵消）
+- `branch - baseline` 的差值是**描述符注册 + 运行时过滤引擎 + 模块门控的固有开销**（无硬件指令修补时的纯软件路径成本）
 
 ### 6.1 Disabled Fast Path Benchmark (P-01)
 
@@ -482,7 +591,7 @@ struct DynDbgStats {
 
 ```bash
 # 1) baseline build + baseline run
-make run_kernel ENABLE_KVM=0 SMP=4 INITRAMFS_SKIP_GZIP=1 LOG_LEVEL=debug SYSCALL_LOG=off NO_DEFAULT_FEATURES=1 FEATURES=cvm_guest
+make run_kernel ENABLE_KVM=0 SMP=4 INITRAMFS_SKIP_GZIP=1 LOG_LEVEL=debug SYSCALL_INFO=off NO_DEFAULT_FEATURES=1 FEATURES=cvm_guest
 
 # guest 内只跑 baseline backend
 快速档：
@@ -491,7 +600,7 @@ ITERS=200 BACKEND_MODE=baseline /test/dyndbg/perf.sh
 BACKEND_MODE=baseline /test/dyndbg/perf.sh
 
 # 2) branch build + branch run
-make run_kernel ENABLE_KVM=0 SMP=4 INITRAMFS_SKIP_GZIP=1 LOG_LEVEL=debug SYSCALL_LOG=off NO_DEFAULT_FEATURES=1 FEATURES="cvm_guest,branchdbg"
+make run_kernel ENABLE_KVM=0 SMP=4 INITRAMFS_SKIP_GZIP=1 LOG_LEVEL=debug SYSCALL_INFO=off NO_DEFAULT_FEATURES=1 FEATURES="cvm_guest,branchdbg"
 
 # guest 内只跑 branch backend
 快速档：
@@ -500,7 +609,7 @@ ITERS=200 BACKEND_MODE=branch /test/dyndbg/perf.sh
 BACKEND_MODE=branch /test/dyndbg/perf.sh
 
 # 3) patch build + disabled run
-make run_kernel ENABLE_KVM=0 SMP=4 INITRAMFS_SKIP_GZIP=1 LOG_LEVEL=debug SYSCALL_LOG=off
+make run_kernel ENABLE_KVM=0 SMP=4 INITRAMFS_SKIP_GZIP=1 LOG_LEVEL=debug SYSCALL_INFO=off
 
 # guest 内只跑 patch backend（静态 patch 站点存在，运行时规则禁用）
 快速档：
@@ -553,14 +662,14 @@ BACKEND_MODE=disabled /test/dyndbg/perf.sh
 # baseline build: sites compiled out
 # baseline build: no dynamic debug sites (no-site baseline)
 # Use NO_DEFAULT_FEATURES to disable default features (which include dyndbg).
-make run_kernel ENABLE_KVM=0 SMP=4 INITRAMFS_SKIP_GZIP=1 LOG_LEVEL=debug SYSCALL_LOG=off NO_DEFAULT_FEATURES=1 FEATURES=cvm_guest
+make run_kernel ENABLE_KVM=0 SMP=4 INITRAMFS_SKIP_GZIP=1 LOG_LEVEL=debug SYSCALL_INFO=off NO_DEFAULT_FEATURES=1 FEATURES=cvm_guest
 
 # branch-based build: branch conditional instrumentation compiled in
 # Enable `branchdbg` feature while leaving `dyndbg` off.
-make run_kernel ENABLE_KVM=0 SMP=4 INITRAMFS_SKIP_GZIP=1 LOG_LEVEL=debug SYSCALL_LOG=off NO_DEFAULT_FEATURES=1 FEATURES="cvm_guest,branchdbg"
+make run_kernel ENABLE_KVM=0 SMP=4 INITRAMFS_SKIP_GZIP=1 LOG_LEVEL=debug SYSCALL_INFO=off NO_DEFAULT_FEATURES=1 FEATURES="cvm_guest,branchdbg"
 
 # patch-based build: static patch sites (original dyndbg)
-make run_kernel ENABLE_KVM=0 SMP=4 INITRAMFS_SKIP_GZIP=1 LOG_LEVEL=debug SYSCALL_LOG=off
+make run_kernel ENABLE_KVM=0 SMP=4 INITRAMFS_SKIP_GZIP=1 LOG_LEVEL=debug SYSCALL_INFO=off
 ```
 
 对应 workload 运行命令：
@@ -631,6 +740,12 @@ PATCH_ITERS=20 /test/dyndbg/patch_bench.sh
 ---
 
 ## 7. 并发与稳定性测试
+
+**只有 C 系列需要多核**（并发 patching 是核心测试目标）：
+
+```bash
+make run_kernel SMP=4 LOG_LEVEL=debug SYSCALL_INFO=off RELEASE=1 MEM=16G
+```
 
 ### 7.1 规则切换并发 (C-01)
 
@@ -708,108 +823,52 @@ BENCH_MODE=log STORM_ITERS=20 LOG_ITERS=50 CLEAR_INTERVAL=10  \
 
 ---
 
-## 8. 指令级分析
+## 8. 最终测试总结
 
-对照 disabled path 演化，验证：
-- 分支消除
-- 读内存减少
-- 禁用路径最小化
+### 8.1 功能正确性（F 系列）
+
+| Case | 结果 | 说明 |
+|------|------|------|
+| F-01~F-08 | 全部 pass | selector 语义、last-match-wins、动态切换、鲁棒性全部通过 |
+
+### 8.2 增量重算与索引消融（I 系列）
+
+| Case | 结果 | 说明 |
+|------|------|------|
+| I-01 | pass | 全量 284 descriptors / 154 modules；module=sched 仅重算 65 descriptors / 2 modules，缩减 ~77% |
+| I-02 | pass | file/func/module 三维 index=on 快 16-36%；line 维度接近（BTreeMap 点查 cache 开销抵消）；全部 sites_patched=0 确认无 patching 噪声 |
+
+### 8.3 性能基准（P 系列）
+
+| Case | 结果 | 说明 |
+|------|------|------|
+| P-01 | pass | baseline=9355μs < disabled=9450μs (+1.0%) < branch=9625μs (+2.9%)，符合 `baseline ≈ disabled < branch` |
+| P-02 | pass | batch=5.09s vs per_site=5.29s，batch 快 ~3.7%；130000 sites 仅 4000 batch transactions |
+
+### 8.4 并发稳定性（C 系列）
+
+| Case | 结果 | 说明 |
+|------|------|------|
+| C-01~C-03 | 全部 pass | 无 panic/oops/死锁，dmesg 干净 |
+
+### 8.5 汇总
+
+| 维度 | 结论 |
+|------|------|
+| selector 精确匹配 | ✅ 通过 |
+| last-match-wins 规则链 | ✅ 通过 |
+| runtime 动态切换 | ✅ 通过 |
+| disabled fast path 最小化 | ✅ disabled 仅比 baseline 高 ~1% |
+| static patch 生效 | ✅ `baseline ≈ disabled < branch` 趋势成立 |
+| batch patch 生效 | ✅ batch 事务数减少 97%，延迟降低 ~3.7% |
+| 多维度索引加速候选收集 | ✅ file/func/module 索引加速 16-36%；line 接近（当前规模下 BTreeMap cache 开销与线性扫描持平） |
+| SMP 并发稳定 | ✅ 无 panic/crash/死锁，dmesg 干净 |
 
 ---
 
-## 9. 最终测试总结
+## 9. 辅助工具与脚本
 
-统一结论表：
-
-| 目标 | 结果 | 备注 |
-| --- | --- | --- |
-| selector 精确匹配 | | |
-| last-match-wins | | |
-| runtime toggle | | |
-| disabled fast path 最小化 | | |
-| static patch 生效 | | |
-| batch patch 生效 | | |
-| SMP 并发稳定 | | |
-
----
-
-## 10. 执行流程建议
-
-1. 补全环境信息
-2. 给 milestone commit 打 tag
-3. 实现必要测试辅助接口（stats）
-4. 按文档逐项执行
-5. 回填数据
-6. 汇总成正式报告
-
----
-
-### 10.1 跨 Commit 基准测试流程（建议）
-
-对 P-01 / P-02 这类需要跨历史实现对比的 benchmark，推荐采用“把测试基础设施回填到历史实现上”，而不是修改历史实现的功能语义。下面是推荐流程与注意事项：
-
-- 原则概述：
-    - 保持主线实现历史不变（不 rebase / 不 force-push）。
-    - 新建一个独立的 `test-infra` 分支，仅包含 benchmark / harness / 脚本与 procfs 测试入口的“最小中立实现”（见下）。
-    - 对每个 milestone commit 建 bench 分支，将 `test-infra` 合并到该分支以生成可执行的被测快照。
-
-- `test-infra` 应该只包含：
-    - 测试脚本：`tools/dyndbg/*.sh`、`tools/dyndbg/collect_results.sh`、`/test/dyndbg/*`（供 initramfs 打包）
-    - 用于驱动基准的 procfs 测试入口（最小骨架），例如 `/proc/sys/kernel/dyndbg_bench`、`/proc/sys/kernel/dyndbg_stats` 的用户接口层（注意：必须保持中立，不引入运行时优化逻辑）
-    - 结果 CSV / 收集器脚本与 README（仅用于运行说明）
-
-- `test-infra` 绝对不能包含：
-    - 性能特性的核心实现（例如 static patch 的算法、batch transaction 的逻辑、module aggregation 的优化代码）
-    - 会改变被测 runtime 行为或 fast path 路径的补丁
-
-- 示例流程（baseline）：
-
-```bash
-# 创建 test-infra（只做一次）
-git checkout -b test-infra
-# 添加/提交测试脚本与最小 procfs 骨架
-git add tools/dyndbg/ /test/dyndbg/ kernel/src/fs/fs_impls/procfs/*dyndbg*.rs
-git commit -m "test(infra): add dyndbg benchmark harness and procfs stubs"
-
-# 为 baseline 建 bench 分支并合并 infra
-git checkout 295929d
-git checkout -b bench-baseline
-git merge --no-ff test-infra -m "merge test-infra for baseline bench"
-
-# 构建并运行 guest（与现有流程一致）
-# 生成 initramfs 时会把 /test/dyndbg 打包进镜像
-make run_kernel ENABLE_KVM=0 SMP=4 INITRAMFS_SKIP_GZIP=1
-
-# 在 guest 内运行 perf
-ITERS=1000000 RUNS=5 WARMUP=2 PERF=1 /test/dyndbg/perf.sh
-```
-
-- 对 descriptor / module gate / static patch / batch patch 重复相同流程：
-    - `git checkout <commit>`（例如 `06b5481`）
-    - `git checkout -b bench-descriptor`
-    - `git merge test-infra`
-    - build/run/collect
-
-- 为什么用 `merge` 而非频繁 `cherry-pick`：
-    - `test-infra` 作为长期维护的工具链，后续修 bug 或增加脚本只需在 test-infra 上更新，然后合并到各个 bench 分支。
-
-- 中立性校验清单（合并后立刻检查）：
-    1. 确认没有引入 runtime 优化代码：`git diff --name-only --diff-filter=AM test-infra..bench-baseline`，审查变更文件。
-    2. 确认 procfs 接口为“骨架/驱动”层且不会改变核心路径（代码应只负责触发/统计/导出），必要时请同事 code-review。
-    3. 在构建后的镜像中，检查 procfs 节点存在：`ls /proc/sys/kernel | grep dyndbg`（在 guest 中验证）。
-
-- 注意事项：
-    - 若旧 commit 完全无法合并 `test-infra`（冲突或不兼容 API），优先采用 cherry-pick 或写兼容性 shim（仍需保证中立）。
-    - 在每个 bench 分支上运行完全相同的 `perf.sh` 参数集合（`ITERS`/`RUNS`/`WARMUP`/`PERF_EVENTS` 等）以保证可比性。
-
-此流程保证：
-- 你对比的是“同一套测试平台下的不同 runtime 实现”，而不是脚本差异；
-- 保持历史实现纯净，同时又能用统一 harness 收集结构化结果。
-
-
-## 11. 辅助工具与脚本
-
-### 11.1 dyndbg_bench
+### 9.1 dyndbg_bench
 
 路径：`/proc/sys/kernel/dyndbg_bench`
 
@@ -834,7 +893,7 @@ mode=count iters=1000000
 - 默认 selector 可用 `module=dyndbg_bench`、`file=dyndbg_bench.rs`、`func=bench_log`。
 - line selector 由 initramfs 生成的 `/etc/dyndbg_line.txt` 提供；若缺失则回退到稳定默认值。
 
-### 11.2 测试脚本（/test/dyndbg）
+### 9.2 测试脚本（/test/dyndbg）
 
 脚本位于 guest 内的 `/test/dyndbg/`，建议在 guest shell 内执行：
 
@@ -846,6 +905,7 @@ chmod +x /test/dyndbg/*.sh
 - 并发压力：`/test/dyndbg/concurrency.sh`
 - 性能基线：`/test/dyndbg/perf.sh`
 - 增量重算：`/test/dyndbg/incremental.sh`
+- 索引消融：`/test/dyndbg/index_ablation.sh`
 - Patch 基准：`/test/dyndbg/patch_bench.sh`
 - 高频压测：`/test/dyndbg/stress.sh`
 - Patch 风暴：`/test/dyndbg/patch_storm.sh`
@@ -860,25 +920,40 @@ chmod +x /test/dyndbg/*.sh
 - `RESULTS_DIR` / `RUN_ID` / `COMMIT` / `PHASE` / `DESCRIPTORS`
 - `PERF` / `PERF_EVENTS` / `DMESG_CHECK` / `BYTES_DISABLED` / `BYTES_ENABLED`
 
-run_all.sh 额外变量：
+run_all.sh 额外变量（仅覆盖同构建用例：F / I-02 / P-01 disabled / P-01R disabled / P-02）：
 
-- `RUN_FUNCTIONAL` / `RUN_INCREMENTAL` / `RUN_PERF`
-- `RUN_PATCH_BENCH` / `RUN_SCALE`
-- `RUN_CONCURRENCY` / `RUN_STRESS` / `RUN_PATCH_STORM`
+- `RUN_FUNCTIONAL` / `RUN_INDEX_ABLATION`
+- `RUN_PERF` / `RUN_WORKLOAD`
+- `RUN_PATCH_BENCH`
 
 快速参数档：
 
 ```bash
-ITERS=200000 RUNS=1 WARMUP=0 LOG_ITERS=200000 TOGGLE_ITERS=2000 STORM_ITERS=2000 \
-PATCH_ITERS=300 UPDATE_ITERS=1 PERF=0 DMESG_CHECK=0 \
-/test/dyndbg/run_all.sh
+ITERS=10 RUNS=1 INDEX_ITERS=100 PATCH_ITERS=100 /test/dyndbg/run_all.sh
 ```
 
 说明：
 
 - `run_all.sh` 默认将结果写入 `results/<RUN_ID>/...`。
 
-### 11.4 结构化输出与结果目录
+### 9.3 dyndbg_stats
+
+路径：`/proc/sys/kernel/dyndbg_stats`
+
+读取输出字段：
+
+- descriptors_recomputed
+- modules_repatched
+- sites_patched
+
+重置统计：
+
+```text
+reset
+```
+
+
+### 9.4 结构化输出与结果目录
 
 所有脚本输出统一的结构化结果行：
 
@@ -910,19 +985,3 @@ RUN_ID=<custom-id>
 - 如果 perf/dmesg/字节信息不可用，对应字段会记录为 `na` 或 `unknown`。
 - 由于当前内核不支持 9P，共享结果目录会回退为 ext2 镜像；如需把结果同步到宿主机源码树下的 `results/`，在 guest 退出后运行 `tools/dyndbg/collect_results.sh`。
 - `functional.sh` 的结构化结果会使用 `status=pass|fail`，并附带 `expected` / `actual`，不再只表示 `executed`。
-
-### 11.3 dyndbg_stats
-
-路径：`/proc/sys/kernel/dyndbg_stats`
-
-读取输出字段：
-
-- descriptors_recomputed
-- modules_repatched
-- sites_patched
-
-重置统计：
-
-```text
-reset
-```
