@@ -32,7 +32,7 @@ show_stats() {
 ensure_csv() {
   if [ ! -e "$CSV_FILE" ]; then
     mkdir -p "$(dirname "$CSV_FILE")"
-    echo "run_id,case,full_desc,module_desc,full_mods,module_mods,full_sites,module_sites,incremental_status,patch_reduction_status" > "$CSV_FILE"
+    echo "run_id,case,full_desc,module_desc,full_mods,module_mods,full_sites,module_sites,full_latency_us,module_latency_us,incremental_status,patch_reduction_status" > "$CSV_FILE"
   fi
 }
 
@@ -45,7 +45,8 @@ parse_stats() {
   desc=$(echo "$stats_text" | awk -F= '/^descriptors_recomputed=/{print $2}')
   mods=$(echo "$stats_text" | awk -F= '/^modules_repatched=/{print $2}')
   sites=$(echo "$stats_text" | awk -F= '/^sites_patched=/{print $2}')
-  echo "$desc $mods $sites"
+  latency=$(echo "$stats_text" | awk -F= '/^last_update_latency_us=/{print $2}')
+  echo "$desc $mods $sites $latency"
 }
 
 relation_to_full() {
@@ -84,8 +85,9 @@ set -- $(parse_stats "$full_stats")
 full_desc=$1
 full_mods=$2
 full_sites=$3
+full_latency=$4
 ensure_csv
-emit_result "baseline: descriptors_recomputed=$full_desc modules_repatched=$full_mods sites_patched=$full_sites run_id=$RUN_ID"
+emit_result "baseline: descriptors_recomputed=$full_desc modules_repatched=$full_mods sites_patched=$full_sites last_update_latency_us=$full_latency run_id=$RUN_ID"
 # baseline recorded; CSV line will be emitted after module run (combined record)
 
 # Incremental: module selector
@@ -98,6 +100,7 @@ set -- $(parse_stats "$inc_stats")
 inc_desc=$1
 inc_mods=$2
 inc_sites=$3
+inc_latency=$4
 
 # Compute I-01 (incremental) status
 set -- $(relation_to_full "$full_desc" "$inc_desc")
@@ -113,7 +116,7 @@ p05_status=$3
 
 
 # Emit combined human-readable summary and write single CSV row
-emit_result "combined: full_desc=$full_desc module_desc=$inc_desc full_mods=$full_mods module_mods=$inc_mods full_sites=$full_sites module_sites=$inc_sites incremental_status=$inc_status patch_reduction_status=$p05_status run_id=$RUN_ID"
-echo "$RUN_ID,I-01,$full_desc,$inc_desc,$full_mods,$inc_mods,$full_sites,$inc_sites,$inc_status,$p05_status" >> "$CSV_FILE"
+emit_result "combined: full_desc=$full_desc module_desc=$inc_desc full_mods=$full_mods module_mods=$inc_mods full_sites=$full_sites module_sites=$inc_sites full_latency_us=$full_latency module_latency_us=$inc_latency incremental_status=$inc_status patch_reduction_status=$p05_status run_id=$RUN_ID"
+echo "$RUN_ID,I-01,$full_desc,$inc_desc,$full_mods,$inc_mods,$full_sites,$inc_sites,$full_latency,$inc_latency,$inc_status,$p05_status" >> "$CSV_FILE"
 
 echo "incremental test finished"

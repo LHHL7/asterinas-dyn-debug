@@ -35,6 +35,7 @@ static DYNDBG_DESCRIPTORS_RECOMPUTED: AtomicU64 = AtomicU64::new(0);
 static DYNDBG_MODULES_REPATCHED: AtomicU64 = AtomicU64::new(0);
 static DYNDBG_SITES_PATCHED: AtomicU64 = AtomicU64::new(0);
 static DYNDBG_PATCH_TRANSACTIONS: AtomicU64 = AtomicU64::new(0);
+static DYNDBG_LAST_UPDATE_LATENCY_US: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DyndbgPatchBackend {
@@ -266,6 +267,8 @@ impl DyndbgState {
 
     // 设置新规则时仅重算受影响的descriptor，降低规则更新成本。
     fn refresh_registered_descriptors(&mut self, affected: Vec<&'static DebugDescriptor>) {
+        let tsc_start = ostd::arch::read_tsc();
+
         let mut seen = BTreeSet::new();
         let mut module_deltas = BTreeMap::<u32, i64>::new();
 
@@ -295,6 +298,13 @@ impl DyndbgState {
         // 应用模块级的变化，触发必要的指令修补。
         for (module_id, delta) in module_deltas {
             self.apply_module_delta(module_id, delta);
+        }
+
+        let tsc_end = ostd::arch::read_tsc();
+        let tsc_freq = ostd::arch::tsc_freq();
+        if tsc_freq > 0 && tsc_end > tsc_start {
+            let elapsed_us = ((tsc_end - tsc_start) * 1_000_000) / tsc_freq;
+            DYNDBG_LAST_UPDATE_LATENCY_US.store(elapsed_us, Ordering::Relaxed);
         }
     }
 
@@ -732,6 +742,8 @@ impl DebugDescriptor {
 }
 
 pub fn dyndbg_should_log(descriptor: &'static DebugDescriptor) -> bool {
+    // 目前仅支持了x86的static patch实现 故此时在dyndbg(x86_64)路径下模块门控为冗余 
+    // 但非x86的路径下依然算是优化 故暂时保留
     if !module_enabled(descriptor.module_id()) {
         return false;
     }
@@ -825,6 +837,7 @@ pub struct DyndbgStatsSnapshot {
     pub modules_repatched: u64,
     pub sites_patched: u64,
     pub patch_transactions: u64,
+    pub last_update_latency_us: u64,
 }
 
 impl From<DyndbgRuleSnapshot> for DyndbgRule {
@@ -904,6 +917,7 @@ pub fn get_dyndbg_stats_snapshot() -> DyndbgStatsSnapshot {
         modules_repatched: DYNDBG_MODULES_REPATCHED.load(Ordering::Relaxed),
         sites_patched: DYNDBG_SITES_PATCHED.load(Ordering::Relaxed),
         patch_transactions: DYNDBG_PATCH_TRANSACTIONS.load(Ordering::Relaxed),
+        last_update_latency_us: DYNDBG_LAST_UPDATE_LATENCY_US.load(Ordering::Relaxed),
     }
 }
 
@@ -912,6 +926,7 @@ pub fn reset_dyndbg_stats() {
     DYNDBG_MODULES_REPATCHED.store(0, Ordering::Relaxed);
     DYNDBG_SITES_PATCHED.store(0, Ordering::Relaxed);
     DYNDBG_PATCH_TRANSACTIONS.store(0, Ordering::Relaxed);
+    DYNDBG_LAST_UPDATE_LATENCY_US.store(0, Ordering::Relaxed);
 }
 
 // 清空规则链，新设置一条规则
