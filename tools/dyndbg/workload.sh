@@ -12,7 +12,7 @@ WORKDIR=${WORKDIR:-$ROOT_DIR/dyndbg_workload}
 ITERS=${ITERS:-1000}
 RUNS=${RUNS:-20}
 WARMUP=${WARMUP:-1}
-WORKLOAD_MODE=${WORKLOAD_MODE:-disabled}
+WORKLOAD_MODE=${WORKLOAD_MODE:-static}
 CLK_TCK=${CLK_TCK:-}
 
 TASK_CLOCK_MS=na
@@ -242,7 +242,7 @@ workload_rules() {
   esac
 }
 
-apply_disabled_rules() {
+apply_static_rules() {
   scenario=$1
   run_rule "clear"
   rules=$(workload_rules "$scenario")
@@ -342,14 +342,14 @@ run_workload_case() {
       rules="compiled_out"
       ;;
     branch)
-      apply_disabled_rules "$workload"
+      apply_static_rules "$workload"
       run_one_series "$workload" "$runner" "branch"
       elapsed_ms=$ELAPSED_MS
       rules=$(workload_rules "$workload")
       ;;
-    disabled)
-      apply_disabled_rules "$workload"
-      run_one_series "$workload" "$runner" "disabled"
+    static)
+      apply_static_rules "$workload"
+      run_one_series "$workload" "$runner" "static"
       elapsed_ms=$ELAPSED_MS
       rules=$(workload_rules "$workload")
       ;;

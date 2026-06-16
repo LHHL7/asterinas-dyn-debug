@@ -1,5 +1,5 @@
 #!/bin/sh
-# Test: P-01 (disabled fast path baseline; optional enabled path)
+# Test: P-01 (static fast path baseline; optional enabled path)
 set -eu
 
 PROC=/proc/sys/kernel/dynamic_debug
@@ -11,7 +11,7 @@ RUNS=${RUNS:-50}
 WARMUP=${WARMUP:-2}
 RUN_COUNT=${RUN_COUNT:-1}
 ENABLE_LOG=${ENABLE_LOG:-0}
-BACKEND_MODE=${BACKEND_MODE:-disabled}
+BACKEND_MODE=${BACKEND_MODE:-static}
 RESULTS_DIR=${RESULTS_DIR:-/ext2/results}
 RUN_ID=${RUN_ID:-$(date +%Y%m%d_%H%M%S 2>/dev/null || echo "run_$$")}
 COMMIT=${COMMIT:-unknown}
@@ -322,8 +322,8 @@ case "$BACKEND_MODE" in
   branch)
     run_series "log" "branch"
     ;;
-  disabled)
-    run_series "log" "disabled"
+  static)
+    run_series "log" "static"
     ;;
   *)
     echo "unknown BACKEND_MODE: $BACKEND_MODE" >&2

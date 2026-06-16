@@ -67,8 +67,8 @@ make run_kernel LOG_LEVEL=debug SYSCALL_INFO=off RELEASE=1 MEM=16G
 |------|---------|
 | F-01~F-08 | 功能正确性 |
 | I-02 | 多维度索引消融 |
-| P-01（disabled） | 微基准 disabled path |
-| P-01R（disabled） | 真实 workload disabled path |
+| P-01（static） | 微基准 static path |
+| P-01R（static） | 真实 workload static path |
 | P-02 | batch patch 开销 |
 
 **需单独编译启动的用例**：
@@ -124,11 +124,11 @@ make run_kernel LOG_LEVEL=debug SYSCALL_INFO=off RELEASE=1 MEM=16G \
 make run_kernel LOG_LEVEL=debug SYSCALL_INFO=off RELEASE=1 MEM=16G \
   NO_DEFAULT_FEATURES=1 FEATURES=”cvm_guest,branchdbg”
 
-# disabled（static patch 站点存在，运行时 -p 禁用）
+# static（static patch 站点存在，运行时 -p 禁用）
 make run_kernel LOG_LEVEL=debug SYSCALL_INFO=off RELEASE=1 MEM=16G
 ```
 
-说明：`NO_DEFAULT_FEATURES=1` 关闭默认 features（含 `dyndbg`），再通过 `FEATURES` 精确指定要启用的 feature。disabled build 不传额外参数，走默认 `cvm_guest + dyndbg`。
+说明：`NO_DEFAULT_FEATURES=1` 关闭默认 features（含 `dyndbg`），再通过 `FEATURES` 精确指定要启用的 feature。static build 不传额外参数，走默认 `cvm_guest + dyndbg`。
 
 ---
 
@@ -207,8 +207,8 @@ module 匹配的是 Rust 的 module_path，而不是 log target。
 | F-08 | 多层规则覆盖 | module=mm +p; file=mm/ +p; func=alloc -p; line=123 +p | last-match-wins 生效 | 多层冲突覆盖 |
 | I-01 | 增量重算正确性与延迟 | module=sched +p | 记录 descriptors_recomputed、modules_repatched、sites_patched、last_update_latency_us，从计数和延迟两个维度验证增量重算优于全量重算 | 依赖 stats 接口 |
 | I-02 | 多维度索引消融 | 同一内核 index=on/off 对比，line/file/func/module 四维度 `-p` | index=on 候选收集延迟低于 index=off（file/func/module 16-36%），line 接近（BTreeMap 点查 vs 线性扫描在当前规模下持平） | 使用 `-p` 消除 patching 噪声，仅测量候选收集路径 |
-| P-01 | Disabled fast path（微基准） | dyndbg_bench 紧凑循环，三构建对比 | `baseline ≈ disabled < branch` | TSC 计时，禁止串口输出 |
-| P-01R | Disabled fast path（真实 workload） | 6 类 syscall 场景，三构建对比 | `baseline ≈ disabled < branch` | 覆盖 FS/IPC/进程/fd 子系统 |
+| P-01 | Static fast path（微基准） | dyndbg_bench 紧凑循环，三构建对比 | `baseline ≈ static < branch` | TSC 计时，禁止串口输出 |
+| P-01R | Static fast path（真实 workload） | 6 类 syscall 场景，三构建对比 | `baseline ≈ static < branch` | 覆盖 FS/IPC/进程/fd 子系统 |
 | P-02 | Batch patch 开销 | 同一内核下 per-site vs batch | batch patch 更快 | 单次脚本自动跑两轮 |
 | C-01 | 并发 patch 稳定性 | 规则切换并发（module=$MODULE_KEY +p） | 无 panic/crash/死锁 | 验证规则切换稳定性 |
 | C-02 | 高频 patch 压测 | 1e5 次 enable/disable | 系统稳定 | 记录耗时 |
@@ -239,7 +239,7 @@ Case 与章节对应关系：
 
 ## 4. 功能正确性测试
 
-F 系列与 P 系列 disabled 共用同一 build（默认 features，dyndbg 启用）：
+F 系列与 P 系列 static 共用同一 build（默认 features，dyndbg 启用）：
 
 ```bash
 make run_kernel LOG_LEVEL=debug SYSCALL_INFO=off RELEASE=1 MEM=16G
@@ -512,14 +512,14 @@ INDEX_ITERS=1000 /test/dyndbg/index_ablation.sh
 
 - baseline、branch、patch 必须分别编译、分别启动、分别采样
 - 同一次 guest 启动只测一个 backend，不在脚本内部自动切换 backend
-- `perf.sh` 通过 `BACKEND_MODE=baseline|branch|disabled` 指定当前启动对应的 backend
-- `workload.sh` 通过 `WORKLOAD_MODE=baseline|branch|disabled` 指定当前启动对应的 workload 采样模式
+- `perf.sh` 通过 `BACKEND_MODE=baseline|branch|static` 指定当前启动对应的 backend
+- `workload.sh` 通过 `WORKLOAD_MODE=baseline|branch|static` 指定当前启动对应的 workload 采样模式
 
 说明：baseline、branch、patch 这三组不是在同一次 guest 里切 backend，而是要分别编译、分别启动三次，再分别执行测试命令。
 
 判定标准（建议范围）：
 
-- disabled path cycles 不高于 baseline 的 1.1x
+- static path cycles 不高于 baseline 的 1.1x
 - static patch 相比 descriptor 应降低 branches/branch-misses
 - 若趋势相反，标记为 review 并记录原因
 
@@ -533,28 +533,28 @@ P 系列的三组构建并非三种并列的编译配置，而是构成一条干
 |------|:---:|:---:|:---:|:---:|:---:|
 | baseline | | | | | |
 | branch | ✅ | ✅ | ✅ | | |
-| disabled (patch build) | ✅ | ✅ | ✅ | ✅ | ✅ |
+| static (patch build) | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 三组构建的角色定位：
 
 | 构建 | 消融角色 |
 |------|---------|
 | baseline | **绝对下限**：编译期完全消除，所有调用点直接消失 |
-| branch | **静态修补优化的消融对照**：保留描述符 + 运行时过滤引擎 + 模块门控，但用软件分支判断替代指令修补。与 disabled 的唯一差异是 static patch 的有无 |
-| disabled（patch build） | **最终实现的性能基线**：完整系统，static patch 站点运行时常驻但被规则禁用 |
+| branch | **静态修补优化的消融对照**：保留描述符 + 运行时过滤引擎 + 模块门控，但用软件分支判断替代指令修补。与 static 的唯一差异是 static patch 的有无 |
+| static（patch build） | **最终实现的性能基线**：完整系统，static patch 站点运行时常驻但被规则禁用 |
 
 消融链：
 
 ```
-baseline ──(+描述符+过滤引擎+模块门控)──→ branch ──(+static patch+批量修补)──→ disabled
+baseline ──(+描述符+过滤引擎+模块门控)──→ branch ──(+static patch+批量修补)──→ static
    ↑                                         ↑                                    ↑
    编译期消除                           软件分支判断                        硬件 NOP/JMP 短路
 ```
 
 核心判据：
 
-- `baseline ≈ disabled < branch` 成立 → static patch 有效消除了分支判断开销，将禁用路径压至接近编译期消除
-- `disabled - branch` 的差值是 **static patch + 批量修补的整体贡献**（模块门控在两组中均存在，已从差值中抵消）
+- `baseline ≈ static < branch` 成立 → static patch 有效消除了分支判断开销，将禁用路径压至接近编译期消除
+- `static - branch` 的差值是 **static patch + 批量修补的整体贡献**（模块门控在两组中均存在，已从差值中抵消）
 - `branch - baseline` 的差值是**描述符注册 + 运行时过滤引擎 + 模块门控的固有开销**（无硬件指令修补时的纯软件路径成本）
 
 ### 6.1 Disabled Fast Path Benchmark (P-01)
@@ -571,8 +571,8 @@ baseline ──(+描述符+过滤引擎+模块门控)──→ branch ──(+st
 
 与题目要求的对应关系：
 
-- 性能基线：`mode=log` 的 disabled path 作为动态禁用下的主基线；`mode=count` 仅作为无日志的辅助 sanity baseline
-- 动态调试对比：同一测试路径在大量调试语句被动态禁用时的 disabled path 数据
+- 性能基线：`mode=log` 的 static path 作为动态禁用下的主基线；`mode=count` 仅作为无日志的辅助 sanity baseline
+- 动态调试对比：同一测试路径在大量调试语句被动态禁用时的 static path 数据
 - `ENABLE_LOG=1` 不属于正式对照，只用于功能验证
 
 当前实现说明：
@@ -608,14 +608,14 @@ ITERS=200 BACKEND_MODE=branch /test/dyndbg/perf.sh
 正式档：
 BACKEND_MODE=branch /test/dyndbg/perf.sh
 
-# 3) patch build + disabled run
+# 3) patch build + static run
 make run_kernel ENABLE_KVM=0 SMP=4 INITRAMFS_SKIP_GZIP=1 LOG_LEVEL=debug SYSCALL_INFO=off
 
 # guest 内只跑 patch backend（静态 patch 站点存在，运行时规则禁用）
 快速档：
-ITERS=200 BACKEND_MODE=disabled /test/dyndbg/perf.sh
+ITERS=200 BACKEND_MODE=static /test/dyndbg/perf.sh
 正式档：
-BACKEND_MODE=disabled /test/dyndbg/perf.sh
+BACKEND_MODE=static /test/dyndbg/perf.sh
 ```
 
 ### 6.1.1 Real Workload Supplement (P-01R)
@@ -636,15 +636,15 @@ BACKEND_MODE=disabled /test/dyndbg/perf.sh
 - baseline build：`dyndbg` feature 关闭，站点在编译期直接移除。
 - branch build：`branchdbg` feature 开启，保留 descriptor + branch gate。
 - patch build：默认构建，站点存在但运行时 `-p` 禁用。
-- `workload.sh` 现在支持三种正式模式：`WORKLOAD_MODE=baseline`、`WORKLOAD_MODE=branch`、`WORKLOAD_MODE=disabled`。
+- `workload.sh` 现在支持三种正式模式：`WORKLOAD_MODE=baseline`、`WORKLOAD_MODE=branch`、`WORKLOAD_MODE=static`。
 - 正式测试建议在三次构建里分别运行对应脚本，再在宿主机侧汇总对比。
-- disabled path 通过同一批 syscall 热点文件上的动态 debug 规则触发，例如 `file=open.rs -p`、`file=rename.rs -p`、`file=mkdir.rs -p`、`file=rmdir.rs -p`。
-- branch path 与 disabled path 使用同一组 `-p` 规则，主要用于比较“descriptor + branch gate”相对 patch 的开销。
+- static path 通过同一批 syscall 热点文件上的动态 debug 规则触发，例如 `file=open.rs -p`、`file=rename.rs -p`、`file=mkdir.rs -p`、`file=rmdir.rs -p`。
+- branch path 与 static path 使用同一组 `-p` 规则，主要用于比较“descriptor + branch gate”相对 patch 的开销。
 - 这组测试更接近真实 workload 的端到端效果，适合作为 P-01 的补充，不替代 P-01 的 fast-path 微基准。
 
 结果字段：
 
-- `workload_mode`：`baseline` / `branch` / `disabled`
+- `workload_mode`：`baseline` / `branch` / `static`
 - `elapsed_ms`：当前模式下的平均耗时
 - `task_clock_ms`：当前模式下的平均任务时钟
 - `context_switches`：当前模式下的平均上下文切换数
@@ -654,7 +654,7 @@ BACKEND_MODE=disabled /test/dyndbg/perf.sh
 
 1. 先在 baseline build 里运行 `WORKLOAD_MODE=baseline`，采 baseline。
 2. 再在 branch build 里运行 `WORKLOAD_MODE=branch`，采 branch 组数据。
-3. 最后在 patch build 里运行 `WORKLOAD_MODE=disabled`，采 patch 组数据。
+3. 最后在 patch build 里运行 `WORKLOAD_MODE=static`，采 patch 组数据。
 
 构建示例：
 
@@ -689,9 +689,9 @@ WORKLOAD_MODE=branch  /test/dyndbg/workload.sh
 
 # patch build
 快速档：
-WORKLOAD_MODE=disabled  ITERS=10  /test/dyndbg/workload.sh
+WORKLOAD_MODE=static  ITERS=10  /test/dyndbg/workload.sh
 正式档：
-WORKLOAD_MODE=disabled  /test/dyndbg/workload.sh
+WORKLOAD_MODE=static  /test/dyndbg/workload.sh
 ```
 
 ---
@@ -842,7 +842,7 @@ BENCH_MODE=log STORM_ITERS=20 LOG_ITERS=50 CLEAR_INTERVAL=10  \
 
 | Case | 结果 | 说明 |
 |------|------|------|
-| P-01 | pass | baseline=9355μs < disabled=9450μs (+1.0%) < branch=9625μs (+2.9%)，符合 `baseline ≈ disabled < branch` |
+| P-01 | pass | baseline=9355μs < static=9450μs (+1.0%) < branch=9625μs (+2.9%)，符合 `baseline ≈ static < branch` |
 | P-02 | pass | batch=5.09s vs per_site=5.29s，batch 快 ~3.7%；130000 sites 仅 4000 batch transactions |
 
 ### 8.4 并发稳定性（C 系列）
@@ -858,8 +858,8 @@ BENCH_MODE=log STORM_ITERS=20 LOG_ITERS=50 CLEAR_INTERVAL=10  \
 | selector 精确匹配 | ✅ 通过 |
 | last-match-wins 规则链 | ✅ 通过 |
 | runtime 动态切换 | ✅ 通过 |
-| disabled fast path 最小化 | ✅ disabled 仅比 baseline 高 ~1% |
-| static patch 生效 | ✅ `baseline ≈ disabled < branch` 趋势成立 |
+| static fast path 最小化 | ✅ static 仅比 baseline 高 ~1% |
+| static patch 生效 | ✅ `baseline ≈ static < branch` 趋势成立 |
 | batch patch 生效 | ✅ batch 事务数减少 97%，延迟降低 ~3.7% |
 | 多维度索引加速候选收集 | ✅ file/func/module 索引加速 16-36%；line 接近（当前规模下 BTreeMap cache 开销与线性扫描持平） |
 | SMP 并发稳定 | ✅ 无 panic/crash/死锁，dmesg 干净 |
@@ -920,7 +920,7 @@ chmod +x /test/dyndbg/*.sh
 - `RESULTS_DIR` / `RUN_ID` / `COMMIT` / `PHASE` / `DESCRIPTORS`
 - `PERF` / `PERF_EVENTS` / `DMESG_CHECK` / `BYTES_DISABLED` / `BYTES_ENABLED`
 
-run_all.sh 额外变量（仅覆盖同构建用例：F / I-02 / P-01 disabled / P-01R disabled / P-02）：
+run_all.sh 额外变量（仅覆盖同构建用例：F / I-02 / P-01 static / P-01R static / P-02）：
 
 - `RUN_FUNCTIONAL` / `RUN_INDEX_ABLATION`
 - `RUN_PERF` / `RUN_WORKLOAD`

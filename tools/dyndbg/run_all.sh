@@ -52,11 +52,11 @@ if [ "$RUN_INDEX_ABLATION" -ne 0 ]; then
 fi
 
 if [ "$RUN_PERF" -ne 0 ]; then
-  run_script "perf" "$SCRIPT_DIR/perf.sh" env BACKEND_MODE=disabled
+  run_script "perf" "$SCRIPT_DIR/perf.sh" env BACKEND_MODE=static
 fi
 
 if [ "$RUN_WORKLOAD" -ne 0 ]; then
-  run_script "workload" "$SCRIPT_DIR/workload.sh" env WORKLOAD_MODE=disabled
+  run_script "workload" "$SCRIPT_DIR/workload.sh" env WORKLOAD_MODE=static
 fi
 
 if [ "$RUN_PATCH_BENCH" -ne 0 ]; then
