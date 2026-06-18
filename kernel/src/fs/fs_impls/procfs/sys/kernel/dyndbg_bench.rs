@@ -23,7 +23,6 @@ static BENCH_STATE: SpinLock<BenchState> = SpinLock::new(BenchState::new());
 enum BenchMode {
     Log,
     LogBatch,
-    Count,
 }
 
 impl BenchMode {
@@ -31,7 +30,6 @@ impl BenchMode {
         match self {
             Self::Log => "log",
             Self::LogBatch => "log_batch",
-            Self::Count => "count",
         }
     }
 }
@@ -48,7 +46,7 @@ struct BenchState {
 impl BenchState {
     const fn new() -> Self {
         Self {
-            last_mode: BenchMode::Count,
+            last_mode: BenchMode::Log,
             last_iters: 0,
             last_duration_us: 0,
         }
@@ -82,7 +80,7 @@ impl FileOps for DyndbgBenchFileOps {
         writeln!(printer, "counter={}", counter)?;
         writeln!(
             printer,
-            "usage: backend=per_site|batch index=on|off mode=log|log_batch|count iters=<n> (e.g., mode=log iters=1000000)"
+            "usage: backend=per_site|batch index=on|off mode=log|log_batch iters=<n> (e.g., mode=log iters=1000000)"
         )?;
 
         Ok(printer.bytes_written())
@@ -166,13 +164,12 @@ fn parse_index(value: &str) -> Result<bool> {
     }
 }
 
-// 解析模式参数，支持log和count两种模式
+// 解析模式参数，支持log和log_batch两种模式
 fn parse_mode(value: &str) -> Result<BenchMode> {
     match value {
         "log" => Ok(BenchMode::Log),
         "log_batch" => Ok(BenchMode::LogBatch),
-        "count" => Ok(BenchMode::Count),
-        _ => return_errno_with_message!(Errno::EINVAL, "mode must be log or count"),
+        _ => return_errno_with_message!(Errno::EINVAL, "mode must be log or log_batch"),
     }
 }
 
@@ -201,14 +198,6 @@ fn execute_bench(mode: BenchMode, iters: u64) -> Result<()> {
             for _ in 0..iters {
                 core::hint::black_box(bench_log_batch());
             }
-        }
-        BenchMode::Count => {
-            let mut counter: u64 = 0;
-            for _ in 0..iters {
-                core::hint::black_box(&mut counter);
-                counter += 1;
-            }
-            core::hint::black_box(&mut counter);
         }
     }
 
