@@ -1,0 +1,44 @@
+@startuml 后端宏系统设计
+' ============================================================
+' 图2a: 双后端宏系统设计 (对应 X.2.2)
+' 展示 dyndbg_debug!() 的两个条件编译后端
+' ============================================================
+
+skinparam backgroundColor #FEFEFE
+skinparam defaultFontName "WenQuanYi Micro Hei"
+
+skinparam rectangle {
+  MinimumWidth 160
+  MinimumHeight 50
+  FontSize 13
+}
+
+skinparam arrow {
+  Color #546E7A
+  Thickness 2
+  FontSize 12
+}
+
+skinparam note {
+  BackgroundColor #FFFDE7
+  BorderColor #FBC02D
+  FontSize 12
+}
+
+
+
+' ============ 入口 ============
+rectangle "  <b>源码调用</b>  \n  dyndbg_debug!  " as entry #F5F5F5
+
+' ============ 两个后端 ============
+rectangle "  <b>后端一: Static Patch (默认)</b>  \n  feature = "dyndbg"  \n  ──────────────────────  \n  生成:  \n  · 5字节 NOP 内联汇编槽  \n  · 跳转目标标签  \n  · 调用点描述符  \n  · 修补site注册信息  \n  ──────────────────────  \n  运行时:  \n  · 禁用: NOP   \n  · 启用: JMP → 日志  " as backend_dyndbg #E8F5E9
+
+rectangle "  <b>后端二: Branch Gating</b>  \n  feature = "branchdbg"  \n  ──────────────────────  \n  生成:  \n  · 调用点描述符  \n    ──────────────────────  \n  运行时:  \n  · 软件门控分支判断  \n    " as backend_branch #E3F2FD
+
+' ============ 箭头 ============
+entry -down-> backend_dyndbg
+entry -down-> backend_branch
+
+
+
+@enduml

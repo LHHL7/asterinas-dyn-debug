@@ -1,0 +1,92 @@
+@startuml 规则更新与增量重算
+' ============================================================
+' 图3b: 规则更新与增量重算流程 (对应 X.3.2 + X.3.3)
+' 从用户命令到触发修补的完整控制路径 (不展开SMP细节)
+' ============================================================
+
+skinparam backgroundColor #FEFEFE
+skinparam participant {
+  BackgroundColor #E3F2FD
+  BorderColor #2196F3
+}
+skinparam sequenceParticipant {
+  BackgroundColor #E3F2FD
+  BorderColor #2196F3
+}
+
+title 规则更新与增量重算流程 (控制路径)
+
+actor "用户" as User
+
+box "接口层" #F3E5F5
+  participant "dynamic_debug\nprocfs" as ProcFS
+end box
+
+box "过滤引擎" #FCE4EC
+  participant "规则追加" as Append
+  participant "多维索引" as Index
+  participant "规则链" as RuleChain
+  participant "增量重算" as Refresh
+  participant "MODULE_STATES" as ModState
+end box
+
+box "修补层 " #FFF3E0
+  participant "模块修补" as Patch
+end box
+
+box "描述符层" #E8F5E9
+  participant "DebugDescriptor" as Desc
+end box
+
+User -> ProcFS : echo "module=mm +p"
+activate ProcFS
+
+ProcFS -> ProcFS : 解析命令\nselector + action
+
+ProcFS -> Append : append_dyndbg_rule()
+activate Append
+
+Append -> Index : 候选收集
+activate Index
+Index --> Append : 受影响的描述符集合
+deactivate Index
+
+Append -> RuleChain : 追加规则条目
+Append -> Refresh : 增量重算
+activate Refresh
+
+== 阶段1: 裁决 ==
+
+loop 每个候选描述符
+  Refresh -> Refresh : 规则链遍历 (last-match-wins)
+
+  alt 状态发生改变
+    Refresh -> Desc : 翻转 enabled 标志
+    Refresh -> Refresh : 记录模块级增量
+  end
+end
+
+== 阶段2: 增量应用 ==
+
+loop 每个受影响的模块
+  Refresh -> ModState : 更新 enabled_count
+  activate ModState
+
+  alt 模块启用状态 0↔1 翻转
+    ModState -> Patch : 触发模块级修补
+    activate Patch
+    Patch --> ModState : 完成
+    deactivate Patch
+  end
+  ModState --> Refresh : 完成
+  deactivate ModState
+end
+
+Refresh --> Append : 完成
+deactivate Refresh
+Append --> ProcFS : 返回
+deactivate Append
+ProcFS --> User : 完成
+deactivate ProcFS
+
+@enduml

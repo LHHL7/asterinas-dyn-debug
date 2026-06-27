@@ -1,0 +1,47 @@
+<mxfile host="app.diagrams.net" modified="2026-01-15T00:00:00.000Z" agent="5.0" etag="drawio" version="24.0.0" type="device">
+  <diagram name="描述符机制与静态注册" id="descriptor-registration">
+    <mxGraphModel dx="1200" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1000" pageHeight="600" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <!-- 标题 -->
+        <mxCell id="title" value="描述符机制与静态注册" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=18;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="350" y="20" width="300" height="40" as="geometry"/>
+        </mxCell>
+
+        <!-- 阶段一: 链接时聚合 -->
+        <mxCell id="phase1-box" value="阶段一: 链接时聚合" style="swimlane;whiteSpace=wrap;html=1;fillColor=#FCE4EC;strokeColor=#E91E63;fontSize=14;fontStyle=1;startSize=30;" vertex="1" parent="1">
+          <mxGeometry x="150" y="80" width="700" height="140" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="desc_reg" value="&lt;b&gt;描述符注册表&lt;/b&gt;&#xa;各编译单元的 &amp;Descriptor 汇集为连续切片" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#546E7A;fontSize=12;align=center;" vertex="1" parent="phase1-box">
+          <mxGeometry x="60" y="45" width="240" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="site_reg" value="&lt;b&gt;修补站点注册表&lt;/b&gt;&#xa;各编译单元的 &amp;PatchSite 汇集为连续切片" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#546E7A;fontSize=12;align=center;" vertex="1" parent="phase1-box">
+          <mxGeometry x="400" y="45" width="240" height="60" as="geometry"/>
+        </mxCell>
+
+        <!-- 阶段二: 启动时注册 -->
+        <mxCell id="phase2-box" value="阶段二: 启动时注册" style="swimlane;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#4CAF50;fontSize=14;fontStyle=1;startSize=30;" vertex="1" parent="1">
+          <mxGeometry x="150" y="300" width="700" height="140" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="init_desc" value="&lt;b&gt;描述符注册&lt;/b&gt;&#xa;分配 module_id, 构建索引映射" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#546E7A;fontSize=12;align=center;" vertex="1" parent="phase2-box">
+          <mxGeometry x="60" y="45" width="240" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="init_site" value="&lt;b&gt;修补站点初始化&lt;/b&gt;&#xa;按模块分组站点, 初始为 NOP (禁用)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#546E7A;fontSize=12;align=center;" vertex="1" parent="phase2-box">
+          <mxGeometry x="400" y="45" width="240" height="60" as="geometry"/>
+        </mxCell>
+
+        <!-- 阶段一 → 阶段二 -->
+        <mxCell id="arrow1" value="启动时遍历注册表" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#546E7A;strokeWidth=2;endArrow=classic;endFill=1;fontSize=12;" edge="1" parent="1" source="phase1-box" target="phase2-box">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

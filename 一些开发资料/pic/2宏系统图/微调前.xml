@@ -1,0 +1,41 @@
+<mxfile host="app.diagrams.net" modified="2026-01-15T00:00:00.000Z" agent="5.0" etag="drawio" version="24.0.0" type="device">
+  <diagram name="双后端宏系统设计" id="macro-backends">
+    <mxGraphModel dx="1200" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1100" pageHeight="600" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <!-- 标题 -->
+        <mxCell id="title" value="双后端宏系统设计 (dyndbg_debug! 条件编译后端)" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=18;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="300" y="20" width="600" height="40" as="geometry"/>
+        </mxCell>
+
+        <!-- 入口：源码调用 -->
+        <mxCell id="entry" value="&lt;b&gt;源码调用&lt;/b&gt;&#xa;dyndbg_debug!" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#546E7A;fontSize=13;fontStyle=0;align=center;" vertex="1" parent="1">
+          <mxGeometry x="430" y="80" width="240" height="60" as="geometry"/>
+        </mxCell>
+
+        <!-- 后端一：Static Patch (默认) -->
+        <mxCell id="backend_dyndbg" value="&lt;b&gt;后端一: Static Patch (默认)&lt;/b&gt;&#xa;feature = &quot;dyndbg&quot;&#xa;──────────────────────&#xa;生成:&#xa;· 5字节 NOP 内联汇编槽&#xa;· 跳转目标标签&#xa;· 调用点描述符&#xa;· 修补site注册信息&#xa;──────────────────────&#xa;运行时:&#xa;· 禁用: NOP&#xa;· 启用: JMP → 日志" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#4CAF50;fontSize=12;align=left;spacingLeft=8;" vertex="1" parent="1">
+          <mxGeometry x="80" y="200" width="380" height="240" as="geometry"/>
+        </mxCell>
+
+        <!-- 后端二：Branch Gating -->
+        <mxCell id="backend_branch" value="&lt;b&gt;后端二: Branch Gating&lt;/b&gt;&#xa;feature = &quot;branchdbg&quot;&#xa;──────────────────────&#xa;生成:&#xa;· 调用点描述符&#xa;──────────────────────&#xa;运行时:&#xa;· 软件门控分支判断" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#E3F2FD;strokeColor=#2196F3;fontSize=12;align=left;spacingLeft=8;" vertex="1" parent="1">
+          <mxGeometry x="620" y="200" width="340" height="200" as="geometry"/>
+        </mxCell>
+
+        <!-- 入口 → 后端一 -->
+        <mxCell id="arrow1" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#546E7A;strokeWidth=2;endArrow=classic;endFill=1;" edge="1" parent="1" source="entry" target="backend_dyndbg">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- 入口 → 后端二 -->
+        <mxCell id="arrow2" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;strokeColor=#546E7A;strokeWidth=2;endArrow=classic;endFill=1;" edge="1" parent="1" source="entry" target="backend_branch">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

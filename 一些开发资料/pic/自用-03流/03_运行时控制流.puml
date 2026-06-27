@@ -1,0 +1,153 @@
+@startuml 运行时控制流
+' ============================================================
+' 图3: 运行时控制流
+' 路径A: 用户 echo 命令 → 规则引擎 → 修补
+' 路径B: 热路径 debug!() → 门控 → 日志/跳过
+' ============================================================
+
+skinparam backgroundColor #FEFEFE
+skinparam defaultFontName "WenQuanYi Micro Hei"
+skinparam participant {
+  BackgroundColor #E3F2FD
+  BorderColor #2196F3
+}
+skinparam sequenceParticipant {
+  BackgroundColor #E3F2FD
+  BorderColor #2196F3
+}
+
+title 运行时核心控制流: 路径A (命令控制) + 路径B (热路径)
+
+actor "用户" as User
+
+box "接口层" #F3E5F5
+  participant "dynamic_debug\nprocfs" as ProcFS
+end box
+
+box "过滤引擎" #FCE4EC
+  participant "DyndbgState\n(SpinLock)" as State
+  participant "多维索引\n(BTreeMap×4)" as Index
+  participant "refresh_\ndescriptors()" as Refresh
+  participant "MODULE_\nSTATES[8192]" as ModState
+end box
+
+box "修补层" #FFF3E0
+  participant "patch_module_\nsites()" as PatchMod
+  participant "static_patch\n(SMP事务)" as SMP
+end box
+
+box "宏/调用点" #E8F5E9
+  participant "debug!()\n调用点" as CallSite
+  participant "DebugDescriptor\n(每个调用点)" as Desc
+end box
+
+== 路径A: 用户规则更新 (控制路径) ==
+
+User -> ProcFS : echo "module=mm +p"
+activate ProcFS
+ProcFS -> ProcFS : write_at()\n解析命令
+ProcFS -> State : append_dyndbg_rule(\n  "module=mm", +p)
+activate State
+
+State -> Index : collect_candidates_for_rule()
+activate Index
+note right of Index
+  <b>候选收集</b>
+  module_index: 遍历所有键
+  子串匹配 "mm" → 返回匹配描述符集
+  如果 index=off: 全量遍历 all_descriptors()
+end note
+Index --> State : Vec<候选描述符>
+deactivate Index
+
+State -> State : push 新规则到 rules[]
+State -> Refresh : refresh_registered_descriptors(affected)
+activate Refresh
+
+loop 对每个候选描述符
+  Refresh -> Refresh : matches_descriptor(desc)\n遍历规则链, last-match-wins
+  alt enabled 状态改变
+    Refresh -> Desc : swap_enabled()
+    Refresh -> Refresh : 记录 module_delta[module_id] += ±1
+  end
+end
+
+loop 对每个有变化的 module_id
+  Refresh -> ModState : apply_module_delta(id, delta)
+  activate ModState
+  ModState -> ModState : enabled_count.fetch_add(delta)
+  alt enabled_count: 0↔1
+    ModState -> PatchMod : on_module_state_transition(\n  module_key, now_enabled)
+    activate PatchMod
+
+    PatchMod -> PatchMod : 选择后端\nPerSite vs Batch
+    PatchMod -> SMP : patch_5byte_slots(requests)
+    activate SMP
+
+    note right of SMP
+      <b>SMP-Safe 修补事务</b>
+      1. 获取 PATCH_LOCK
+      2. IPI → 其他CPU等待
+      3. 关本地IRQ
+      4. 关CR0.WP
+      5. write_volatile 写入5字节
+      6. fence(SeqCst)
+      7. 释放其他CPU
+    end note
+
+    SMP --> PatchMod : 完成
+    deactivate SMP
+
+    PatchMod --> ModState : 完成
+    deactivate PatchMod
+  end
+  ModState --> Refresh : 完成
+  deactivate ModState
+end
+
+Refresh --> State : 完成
+deactivate Refresh
+State --> ProcFS : 返回
+deactivate State
+ProcFS --> User : (完成)
+deactivate ProcFS
+
+== 路径B: 热路径 (每次 debug!() 调用) ==
+
+CallSite -> CallSite : dyndbg_debug!("msg")\n宏展开
+
+alt feature="dyndbg" (静态修补)
+  CallSite -> CallSite : 执行 5字节指令槽
+
+  alt 禁用 (NOP5)
+    CallSite -> CallSite : NOP 穿透\nlabel 块被跳过\n→ 零额外开销
+
+  else 启用 (JMP → __dyndbg_target)
+    CallSite -> CallSite : JMP 跳入 label 块
+
+    CallSite -> ModState : module_enabled(module_id)
+    activate ModState
+    ModState -> ModState : enabled_count.load(Acquire)
+    alt enabled_count == 0
+      ModState --> CallSite : false (模块级跳过)
+    else enabled_count > 0
+      ModState --> CallSite : true (继续)
+    end
+    deactivate ModState
+
+    CallSite -> Desc : should_log_fast()
+    activate Desc
+    Desc -> Desc : enabled.load(Acquire)
+    alt enabled == false
+      Desc --> CallSite : false (跳过日志)
+    else enabled == true
+      Desc --> CallSite : true → log::debug!("msg")
+    end
+    deactivate Desc
+  end
+
+else feature="branchdbg" (软件分支)
+  CallSite -> CallSite : if dyndbg_should_log() { log!() }
+end
+
+@enduml

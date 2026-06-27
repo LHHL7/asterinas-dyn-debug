@@ -1,0 +1,52 @@
+@startuml 描述符与静态注册
+' ============================================================
+' 图2b: 描述符机制与静态注册 (对应 X.2.1)
+' ============================================================
+
+skinparam backgroundColor #FEFEFE
+skinparam defaultFontName "WenQuanYi Micro Hei"
+skinparam packageStyle rectangle
+skinparam padding 10
+skinparam nodesep 30
+skinparam ranksep 25
+
+skinparam package {
+  BackgroundColor<<link>> #FCE4EC
+  BorderColor<<link>> #E91E63
+  BackgroundColor<<reg>> #E8F5E9
+  BorderColor<<reg>> #4CAF50
+  FontSize 13
+}
+
+skinparam rectangle {
+  MinimumWidth 200
+  MinimumHeight 30
+  FontSize 12
+}
+
+skinparam arrow {
+  Color #546E7A
+  Thickness 2
+  FontSize 11
+}
+
+title 描述符机制与静态注册
+
+' ============ 阶段一 ============
+package "**阶段一: 链接时聚合**" as PHASE1 <<link>> {
+
+  rectangle "  <b>描述符注册表</b>  \n  各编译单元的 &Descriptor 汇集为连续切片  " as desc_reg
+  rectangle "  <b>修补站点注册表</b>  \n  各编译单元的 &PatchSite 汇集为连续切片  " as site_reg
+}
+
+' ============ 阶段二 ============
+package "**阶段二: 启动时注册**" as PHASE2 <<reg>> {
+  rectangle "  <b>描述符注册</b>  \n  分配 module_id, 构建索引映射  " as init_desc
+  rectangle "  <b>修补站点初始化</b>  \n  按模块分组站点, 初始为 NOP (禁用)  " as init_site
+}
+
+' ============ 箭头 ============
+PHASE1 -down-> PHASE2 : " 启动时遍历注册表  "
+
+
+@enduml

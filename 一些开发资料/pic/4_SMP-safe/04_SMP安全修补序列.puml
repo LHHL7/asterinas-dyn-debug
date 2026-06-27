@@ -1,0 +1,51 @@
+@startuml SMP安全修补序列
+' ============================================================
+' 图4: SMP-Safe 批量修补事务
+' 展示主CPU通过IPI协调其他CPU完成指令修补
+' ============================================================
+
+skinparam backgroundColor #FEFEFE
+skinparam defaultFontName "WenQuanYi Micro Hei"
+skinparam participant {
+  BackgroundColor #E3F2FD
+  BorderColor #2196F3
+}
+skinparam sequenceParticipant {
+  BackgroundColor #E3F2FD
+  BorderColor #2196F3
+}
+
+' title SMP-Safe 静态指令修补序列 (x86_64)
+
+participant "调用方" as Caller
+participant "CPU 0\n(主CPU)" as CPU0
+participant "CPU 1..N\n(其他CPU)" as CPUN
+
+Caller -> Caller : 收集当前模块所有站点
+
+Caller -> CPU0 : 发起批量修补
+
+group SMP 事务 
+  CPU0 -> CPUN : 发送 IPI
+  activate CPUN
+  note over CPUN : 自旋等待释放信号
+  CPUN --> CPU0 : (已到达)
+
+  CPU0 -> CPU0 : 关本地中断
+  CPU0 -> CPU0 : 关写保护 (CR0.WP)
+
+  loop 每个站点
+    CPU0 -> CPU0 : 写入 5字节指令\n(NOP 或 JMP)
+    note over CPU0 : 连续写入，不释放锁
+  end
+
+  CPU0 -> CPU0 : 内存屏障
+
+  CPU0 -> CPUN : 发送释放信号
+  CPUN -> CPUN : 退出自旋
+  deactivate CPUN
+end
+
+CPU0 --> Caller : 完成
+
+@enduml

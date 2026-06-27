@@ -1,0 +1,38 @@
+@startuml 模块门控
+' ============================================================
+' 图3c: 模块级分组门控 (对应 4.2.3)
+' 两层原子检查，泳道横向布局适配页面宽度
+' ============================================================
+
+skinparam backgroundColor #FEFEFE
+skinparam defaultFontSize 10
+skinparam activity {
+  BackgroundColor #E3F2FD
+  BorderColor #2196F3
+  StartColor #4CAF50
+  EndColor #F44336
+  BarColor #FF9800
+  FontSize 10
+}
+
+title 模块级分组门控 (两层原子检查)
+
+|模块门控|
+start
+if (enabled_count?) then (= 0)
+  #FFCDD2:<b>快速跳过 (模块级)</b>\nO(1) 绕过全部调用点;
+  end
+else (> 0)
+endif
+
+|描述符门控|
+if (enabled?) then (false)
+  #FFCDD2:<b>快速跳过 (调用点级)</b>\n本调用点未启用;
+  end
+else (true)
+endif
+
+|debug!|
+:执行日志记录;
+stop
+@enduml
