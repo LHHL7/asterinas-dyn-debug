@@ -53,27 +53,28 @@
 ## 2. 开发材料汇总
 
 ### 2.1 设计及开发文档
-见![开发文档](最终开发材料汇总/开发文档.pdf)
+见[开发文档](最终开发材料汇总/开发文档.pdf)
 
 ### 2.2 测试文档
-见![测试文档](最终开发材料汇总/测试文档.md)
+见[测试文档](最终开发材料汇总/测试文档.md)
 
 ### 2.3 ppt
-见![项目展示汇报](最终开发材料汇总/项目展示汇报.pptx)
+见[项目展示汇报](最终开发材料汇总/项目展示汇报.pptx)
 
 ### 2.4 演示视频
 通过网盘分享的文件：项目演示视频.mp4
-链接: ![https://pan.baidu.com/s/1lhWoEm3SvYicdvor0rQhTg](https://pan.baidu.com/s/1lhWoEm3SvYicdvor0rQhTg) 提取码: lh77
+链接: [https://pan.baidu.com/s/1lhWoEm3SvYicdvor0rQhTg](https://pan.baidu.com/s/1lhWoEm3SvYicdvor0rQhTg) 提取码: lh77
 
 ### 2.5 AI工具使用记录
-见![ai工具使用记录](最终开发材料汇总/AI工具使用记录.md)
+见[ai工具使用记录](最终开发材料汇总/AI工具使用记录.md)
+
 ---
 
 ## 3. 系统框架设计简述
 
 系统整体采用**五层分层架构**，其中用户接口层、运行时过滤引擎和静态指令修补层属于运行时引擎，静态注册层和宏层属于编译时基础设施：
 
-![系统整体分层架构](一些开发资料/pic/1架构图/架构图.svg)
+<img src="一些开发资料/pic/1架构图/架构图.svg" alt="系统整体分层架构" width="100%">
 
 | 层次 | 职责 | 核心组件 |
 |------|------|----------|
@@ -88,7 +89,7 @@
 - **编译时链路**：宏层为每个调用点生成描述符和NOP5槽 → 静态注册层链接时聚合为全局数组 → 启动时一次性构建索引 → 运行时引擎基于静态数据执行过滤和修补
 - **运行时链路**：用户写入规则 → 过滤引擎翻译为启用/禁用决策 → 索引定位受影响描述符 → 模块门控0↔1翻转触发批量修补
 
-![控制路径——从用户输入到指令落地的完整调用链](一些开发资料/pic/3-节首/控制路径.svg)
+<img src="一些开发资料/pic/3-节首/控制路径.svg" alt="控制路径" width="100%">
 
 ---
 
@@ -117,7 +118,7 @@
 | **模块门控** | `AtomicU32` 启用计数 + 0↔1翻转触发修补 | 模块修补次数降低98.7% |
 | **Last-Match-Wins** | 规则链逆序匹配，首个命中即返回 | 追加规则自然覆盖，支持粗→细粒度收敛 |
 
-![热路径门控决策流程](一些开发资料/pic/3.3/热路径门控决策.png)
+<img src="一些开发资料/pic/3.3/热路径门控决策.png" alt="热路径门控决策流程" width="60%">
 
 ### 4.3 静态指令修补层
 
@@ -129,7 +130,7 @@ x86_64上实现NOP5↔JMP rel32的SMP安全批量修补：
 | **PatchRendezvous协议** | ①全局排他锁 → ②IPI集结远程CPU旋转等待 → ③关CR0.WP+关中断批量写入 → ④SeqCst屏障序列化流水线 → ⑤释放远程CPU |
 | **批量修补事务** | 模块级聚合：同一模块的全部站点在一次事务中完成，IPI广播次数降低32.5× |
 
-![SMP安全修补序列](一些开发资料/pic/4_SMP-safe/SMP安全修补序列.png)
+<img src="一些开发资料/pic/4_SMP-safe/SMP安全修补序列.png" alt="SMP安全修补序列" width="70%">
 
 ### 4.4 编译期基础设施
 
@@ -145,9 +146,9 @@ x86_64上实现NOP5↔JMP rel32的SMP安全批量修补：
 
 **linkme分布式注册**：`#[distributed_slice]` 将每个调用点的描述符和补丁站点分散定义到各编译单元，链接时自动合并为全局数组。启动时 `#[init_component]` 一次性遍历全局数组完成索引构建，运行中零动态分配。
 
-![编译期符号定义与linkme注册机制](一些开发资料/pic/2编译时设施图/注册机制.svg)
+<img src="一些开发资料/pic/2编译时设施图/注册机制.svg" alt="编译期符号定义与linkme注册机制" width="80%">
 
-![双后端宏系统决策树](一些开发资料/pic/2宏系统图/02a.svg)
+<img src="一些开发资料/pic/2宏系统图/02a.svg" alt="双后端宏系统决策树" width="80%">
 
 ### 4.5 代码组织
 
@@ -184,7 +185,7 @@ results/                     ← 测试结果CSV
 
 验证四维选择器匹配、last-match-wins语义、动态开关即时生效、异常输入安全处理：
 
-![功能正确性测试结果](一些开发资料/pic/result_charts/tab1_functional.png)
+<img src="一些开发资料/pic/result_charts/tab1_functional.png" alt="功能正确性测试结果" width="70%">
 
 **8个用例全部通过**。关键结论：last-match-wins语义正确（追加规则自然覆盖旧决策）、动态开关即时生效（clear后立即回落disabled态）、异常输入安全处理（非法命令不改变规则链状态，不触发panic）。
 
@@ -194,7 +195,7 @@ results/                     ← 测试结果CSV
 
 三种后端各1000万次迭代×50轮，内核态TSC精确计时：
 
-![微基准热路径性能对比](一些开发资料/pic/result_charts/fig1_p01_perf.png)
+<img src="一些开发资料/pic/result_charts/fig1_p01_perf.png" alt="微基准热路径性能对比" width="70%">
 
 | 后端 | 平均耗时 (µs) | 相对baseline增幅 |
 |------|-------------|-----------------|
@@ -208,7 +209,7 @@ results/                     ← 测试结果CSV
 
 6种系统调用负载（create_delete/rename/pipe_comm等），disabled与baseline不可区分：
 
-![真实工作负载开销对比](一些开发资料/pic/result_charts/fig2_workload.png)
+<img src="一些开发资料/pic/result_charts/fig2_workload.png" alt="真实工作负载开销对比" width="70%">
 
 全部6种负载在disabled模式下与baseline差异<2%，证明dyndbg在真实内核路径上的开销可忽略。
 
@@ -216,7 +217,7 @@ results/                     ← 测试结果CSV
 
 运行时热切换 `index=on|off`，对比四种选择器的索引加速效果：
 
-![索引消融实验结果](一些开发资料/pic/result_charts/fig3_index_ablation.png)
+<img src="一些开发资料/pic/result_charts/fig3_index_ablation.png" alt="索引消融实验结果" width="70%">
 
 | 选择器 | 加速比 | 说明 |
 |--------|--------|------|
@@ -229,7 +230,7 @@ results/                     ← 测试结果CSV
 
 per_site（逐站点）vs batch（模块级批量）在相同修补负载下的SMP事务次数对比：
 
-![批量修补事务对比](一些开发资料/pic/result_charts/fig4_patch_bench.png)
+<img src="一些开发资料/pic/result_charts/fig4_patch_bench.png" alt="批量修补事务对比" width="70%">
 
 | 后端 | SMP事务次数 | 每事务修补站点数 |
 |------|-----------|----------------|
@@ -289,10 +290,10 @@ per_site（逐站点）vs batch（模块级批量）在相同修补负载下的S
 |----------|----------|----------|
 | 队伍名称：儒雅的读书人 | 系统架构设计与技术调研 | `kernel/comps/logger/src/` ← aster_logger crate |
 | 所属赛题：proj10 | 全部代码实现（~1500行核心） | `kernel/.../procfs/sys/kernel/` ← 用户接口 |
-| 成员：林辉 | 10个shell测试套件设计执行 | `tools/dyndbg/` ← 测试脚本 |
-| 学校：厦门大学 | 57页开发文档撰写；架构图/流程图制作；PPT与演示视频准备 | `开发文档/` `演示材料/` `一些开发资料/` |
+| 成员：林辉 | shell测试套件设计执行 | `tools/dyndbg/` ← 测试脚本 |
+| 学校：厦门大学 | 开发文档撰写；架构图/流程图制作；PPT与演示视频准备 | `开发文档/` `演示材料/` `一些开发资料/` |
 
-独立完成全部设计、开发、测试与文档工作。
+完成设计、开发、测试与文档工作。
 
 ---
 
