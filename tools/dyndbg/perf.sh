@@ -8,7 +8,7 @@ BENCH=/proc/sys/kernel/dyndbg_bench
 MODULE_KEY=${MODULE_KEY:-dyndbg_bench}
 ITERS=${ITERS:-10000000}
 RUNS=${RUNS:-50}
-WARMUP=${WARMUP:-2}
+WARMUP=${WARMUP:-5}
 RUN_COUNT=${RUN_COUNT:-1}
 ENABLE_LOG=${ENABLE_LOG:-0}
 BACKEND_MODE=${BACKEND_MODE:-static}
@@ -17,6 +17,7 @@ RUN_ID=${RUN_ID:-$(date +%Y%m%d_%H%M%S 2>/dev/null || echo "run_$$")}
 COMMIT=${COMMIT:-unknown}
 PHASE=${PHASE:-unknown}
 CSV_FILE="$RESULTS_DIR/perf/results.csv"
+PER_ROUND_CSV="$RESULTS_DIR/perf/per_round.csv"
 PERF=${PERF:-1}
 PERF_EVENTS=${PERF_EVENTS:-cycles,instructions,branches,branch-misses}
 CLK_TCK=${CLK_TCK:-}
@@ -39,6 +40,9 @@ ensure_csv() {
     else
       echo "run_id,state,mode,expected_behavior,actual_behavior,status,iters,runs,avg_us,min_us,max_us,mode_label,task_clock_ms,context_switches,page_faults" > "$CSV_FILE"
     fi
+  fi
+  if [ ! -e "$PER_ROUND_CSV" ]; then
+    echo "run_id,state,mode,round,duration_us" > "$PER_ROUND_CSV"
   fi
 }
 
@@ -234,6 +238,8 @@ run_series() {
       echo "missing duration for mode=$mode" >&2
       return 1
     fi
+
+    echo "$RUN_ID,$state,$mode,$i,$duration" >> "$PER_ROUND_CSV"
 
     if [ "$i" -eq 1 ]; then
       min=$duration
