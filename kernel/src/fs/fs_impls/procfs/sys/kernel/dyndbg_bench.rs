@@ -77,10 +77,11 @@ impl FileOps for DyndbgBenchFileOps {
         writeln!(printer, "last_duration_us={}", state.last_duration_us)?;
         writeln!(printer, "backend={}", aster_logger::get_dyndbg_patch_backend().as_str())?;
         writeln!(printer, "index={}", if aster_logger::get_dyndbg_index_enabled() { "on" } else { "off" })?;
+        writeln!(printer, "recompute={}", if aster_logger::get_dyndbg_recompute_enabled() { "incremental" } else { "full" })?;
         writeln!(printer, "counter={}", counter)?;
         writeln!(
             printer,
-            "usage: backend=per_site|batch index=on|off mode=log|log_batch iters=<n> (e.g., mode=log iters=1000000)"
+            "usage: backend=per_site|batch index=on|off recompute=incremental|full mode=log|log_batch iters=<n>"
         )?;
 
         Ok(printer.bytes_written())
@@ -106,6 +107,7 @@ fn run_bench(command: &str) -> Result<()> {
     // 检查命令格式，解析出mode和iters参数
     let mut backend = None;
     let mut index_enabled = None;
+    let mut recompute_enabled = None;
     let mut mode = None;
     let mut iters = None;
 
@@ -114,6 +116,8 @@ fn run_bench(command: &str) -> Result<()> {
             backend = Some(parse_backend(value)?);
         } else if let Some(value) = token.strip_prefix("index=") {
             index_enabled = Some(parse_index(value)?);
+        } else if let Some(value) = token.strip_prefix("recompute=") {
+            recompute_enabled = Some(parse_recompute(value)?);
         } else if let Some(value) = token.strip_prefix("mode=") {
             mode = Some(parse_mode(value)?);
         } else if let Some(value) = token.strip_prefix("iters=") {
@@ -135,6 +139,10 @@ fn run_bench(command: &str) -> Result<()> {
 
     if let Some(enabled) = index_enabled {
         aster_logger::set_dyndbg_index_enabled(enabled);
+    }
+
+    if let Some(enabled) = recompute_enabled {
+        aster_logger::set_dyndbg_recompute_enabled(enabled);
     }
 
     if mode.is_none() && iters.is_none() {
@@ -161,6 +169,15 @@ fn parse_index(value: &str) -> Result<bool> {
         "on" => Ok(true),
         "off" => Ok(false),
         _ => return_errno_with_message!(Errno::EINVAL, "index must be on or off"),
+    }
+}
+
+// 解析增量重算开关参数，支持incremental（增量）和full（全量）两种模式
+fn parse_recompute(value: &str) -> Result<bool> {
+    match value {
+        "incremental" => Ok(true),
+        "full" => Ok(false),
+        _ => return_errno_with_message!(Errno::EINVAL, "recompute must be incremental or full"),
     }
 }
 

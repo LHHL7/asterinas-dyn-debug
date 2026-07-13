@@ -42,6 +42,14 @@ set_index() {
   echo "index=$1" > "$BENCH"
 }
 
+set_recompute() {
+  echo "recompute=$1" > "$BENCH"
+}
+
+# Also expose recompute for external control (default: incremental)
+RECOMPUTE_MODE=${RECOMPUTE_MODE:-incremental}
+export RECOMPUTE_MODE
+
 read_uptime() {
   awk '{print $1}' /proc/uptime
 }
@@ -108,12 +116,16 @@ run_ablation_case() {
 echo "=== Index Ablation Test (-p mode, no patching) ==="
 echo "iters=$INDEX_ITERS module=$MODULE_KEY file=$FILE_KEY func=$FUNC_KEY line=$LINE_KEY"
 
-# --- Full recompute baseline (selectorless -p): short-circuits to all_descriptors() ---
-# A selectorless rule hits the fast-path in collect_candidates_for_rule_entries()
-# and returns ALL descriptors (283), regardless of index on/off.
-# This serves as the L0 baseline: full recompute, no candidate narrowing.
-echo "--- full recompute baseline (selectorless -p, all descriptors) ---"
-run_ablation_case "off" "-p"  "I-02-full-recompute"
+# Ensure baseline state: recompute=incremental
+set_recompute "incremental"
+
+# --- Full recompute baseline: recompute=full bypasses candidate narrowing ---
+# Uses the SAME module rule as L1/L2, but with recompute=full to force
+# processing of all 283 descriptors (simulating Linux's fused O(n) behavior).
+echo "--- full recompute baseline (recompute=full, module rule, all 283 descriptors) ---"
+set_recompute "full"
+run_ablation_case "off" "module=$MODULE_KEY -p"  "I-02-full-recompute"
+set_recompute "$RECOMPUTE_MODE"   # restore default
 
 # --- Line selector: true O(log N) BTreeMap lookup vs O(N) linear scan ---
 echo "--- line selector (true BTreeMap lookup) ---"
@@ -138,7 +150,8 @@ echo "--- module selector (key-scan, large match) ---"
 run_ablation_case "on"  "module=$MODULE_KEY -p"  "I-02-index-on-module"
 run_ablation_case "off" "module=$MODULE_KEY -p"  "I-02-index-off-module"
 
-# Restore default
+# Restore defaults
+set_recompute "incremental"
 set_index "on"
 run_rule "clear"
 

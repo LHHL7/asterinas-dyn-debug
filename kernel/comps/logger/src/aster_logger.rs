@@ -82,6 +82,19 @@ pub fn get_dyndbg_index_enabled() -> bool {
     DYNDBG_INDEX_ENABLED.load(Ordering::Relaxed)
 }
 
+/// When `false`, candidate collection returns ALL descriptors instead of a narrowed
+/// subset, simulating the fused full-recompute behavior of Linux's `ddebug_change()`.
+/// This is an ablation hook for measuring the contribution of incremental recomputation.
+static DYNDBG_RECOMPUTE_ENABLED: AtomicBool = AtomicBool::new(true);
+
+pub fn set_dyndbg_recompute_enabled(enabled: bool) {
+    DYNDBG_RECOMPUTE_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+pub fn get_dyndbg_recompute_enabled() -> bool {
+    DYNDBG_RECOMPUTE_ENABLED.load(Ordering::Relaxed)
+}
+
 struct ModuleState {
     enabled_count: AtomicU32,
 }
@@ -412,6 +425,13 @@ impl DyndbgState {
     ) -> Vec<&'static DebugDescriptor> {
         // If any selectorless rule exists, it can affect all descriptors.
         if entries.iter().any(|entry| !entry.rule.has_any_selector()) {
+            return all_descriptors();
+        }
+
+        // Ablation: bypass candidate narrowing, return all descriptors.
+        // When recompute is disabled, every rule update triggers full recomputation
+        // of all descriptors, simulating Linux's fused O(n) behavior.
+        if !get_dyndbg_recompute_enabled() {
             return all_descriptors();
         }
 
