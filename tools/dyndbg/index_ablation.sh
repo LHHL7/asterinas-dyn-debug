@@ -108,6 +108,13 @@ run_ablation_case() {
 echo "=== Index Ablation Test (-p mode, no patching) ==="
 echo "iters=$INDEX_ITERS module=$MODULE_KEY file=$FILE_KEY func=$FUNC_KEY line=$LINE_KEY"
 
+# --- Full recompute baseline (selectorless -p): short-circuits to all_descriptors() ---
+# A selectorless rule hits the fast-path in collect_candidates_for_rule_entries()
+# and returns ALL descriptors (283), regardless of index on/off.
+# This serves as the L0 baseline: full recompute, no candidate narrowing.
+echo "--- full recompute baseline (selectorless -p, all descriptors) ---"
+run_ablation_case "off" "-p"  "I-02-full-recompute"
+
 # --- Line selector: true O(log N) BTreeMap lookup vs O(N) linear scan ---
 echo "--- line selector (true BTreeMap lookup) ---"
 run_ablation_case "on"  "line=$LINE_KEY -p"  "I-02-index-on-line"
