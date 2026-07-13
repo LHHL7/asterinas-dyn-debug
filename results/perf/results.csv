@@ -1,4 +1,4 @@
 run_id,state,mode,expected_behavior,actual_behavior,status,iters,runs,avg_us,min_us,max_us,mode_label,task_clock_ms,context_switches,page_faults
-20260603_101938,baseline,log,baseline,baseline,pass,10000000,50,9355,9147,10294,log,0,45,990
-20260603_105206,static,log,static,static,pass,10000000,50,9450,9011,10445,log,na,42,1010
-20260603_102130,branch,log,branch,branch,pass,10000000,50,9625,8985,10662,log,0,42,990
+20260711_095454,baseline,log,baseline,baseline,pass,10000000,50,9386,8960,10556,log,na,44,981
+20260711_100355,static,log,static,static,pass,10000000,50,9485,9206,10650,log,na,42,992
+20260711_100135,branch,log,branch,branch,pass,10000000,50,9594,8969,10004,log,0,42,992
