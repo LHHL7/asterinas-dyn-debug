@@ -1,28 +1,19 @@
-run_id,workload,workload_mode,elapsed_ms,task_clock_ms,context_switches,page_faults,iters,runs,rules
-20260530_064317,create_delete,baseline,1606,2,157,433,10,5,compiled_out
-20260530_064317,rename,baseline,4462,na,284,791,10,5,compiled_out
-20260530_064317,mkdir_rmdir,baseline,2652,na,215,613,10,5,compiled_out
-20260530_065602,create_delete,branch,3746,na,273,432,10,5,file=open.rs -p,file=close.rs -p,file=unlink.rs -p
-20260530_065602,rename,branch,6930,na,437,792,10,5,file=rename.rs -p
-20260530_065602,mkdir_rmdir,branch,4448,96,319,612,10,5,file=mkdir.rs -p,file=rmdir.rs -p
-20260530_070744,create_delete,static,1816,128,182,432,10,5,file=open.rs -p,file=close.rs -p,file=unlink.rs -p
-20260530_070744,rename,static,4570,676,317,795,10,5,file=rename.rs -p
-20260530_070744,mkdir_rmdir,static,3026,na,246,613,10,5,file=mkdir.rs -p,file=rmdir.rs -p
-20260604_085554,create_delete,baseline,557,2,3061,91044,1000,20,compiled_out
-20260604_085554,rename,baseline,1630,3,9092,269043,1000,20,compiled_out
-20260604_085554,mkdir_rmdir,baseline,1111,2,6076,181031,1000,20,compiled_out
-20260604_085554,pipe_comm,baseline,363,1,5079,58839,1000,20,compiled_out
-20260604_085554,fork_wait,baseline,196,1,3047,31939,1000,20,compiled_out
-20260604_085554,fd_dup_close,baseline,184,2,3048,31536,1000,20,compiled_out
-20260604_090743,create_delete,branch,564,2,3061,91046,1000,20,file=open.rs -p,file=close.rs -p,file=unlink.rs -p
-20260604_090743,rename,branch,1614,2,9091,272933,1000,20,file=rename.rs -p
-20260604_090743,mkdir_rmdir,branch,1101,5,6077,182043,1000,20,file=mkdir.rs -p,file=rmdir.rs -p
-20260604_090743,pipe_comm,branch,358,3,5091,58947,1000,20,file=pipe.rs -p,file=read.rs -p,file=write.rs -p
-20260604_090743,fork_wait,branch,191,5,3047,33099,1000,20,file=clone.rs -p,file=wait4.rs -p
-20260604_090743,fd_dup_close,branch,186,2,3047,31147,1000,20,file=dup.rs -p
-20260604_090428,create_delete,static,560,3,3062,91046,1000,20,file=open.rs -p,file=close.rs -p,file=unlink.rs -p
-20260604_090428,rename,static,1609,2,9090,272933,1000,20,file=rename.rs -p
-20260604_090428,mkdir_rmdir,static,1067,3,6076,182043,1000,20,file=mkdir.rs -p,file=rmdir.rs -p
-20260604_090428,pipe_comm,static,351,2,5083,58947,1000,20,file=pipe.rs -p,file=read.rs -p,file=write.rs -p
-20260604_090428,fork_wait,static,189,1,3047,33099,1000,20,file=clone.rs -p,file=wait4.rs -p
-20260604_090428,fd_dup_close,static,186,3,3047,31147,1000,20,file=dup.rs -p
+run_id,workload,workload_mode,avg_us,sd_us,ci95_us,min_us,max_us,task_clock_ms,context_switches,page_faults,iters,runs,rules
+20260714_105416,create_delete,baseline,573336,9714,4257,548386,585697,4,3061,92043,1000,20,compiled_out
+20260714_105416,rename,baseline,1632585,36440,15971,1590825,1704199,3,9092,273031,1000,20,compiled_out
+20260714_105416,mkdir_rmdir,baseline,1097074,20635,9044,1049400,1126156,2,6076,182030,1000,20,compiled_out
+20260714_105416,pipe_comm,baseline,361947,5756,2523,347732,369164,2,5086,60739,1000,20,compiled_out
+20260714_105416,fork_wait,baseline,186930,3261,1429,179086,191880,3,3048,30937,1000,20,compiled_out
+20260714_105416,fd_dup_close,baseline,184668,2758,1209,178249,188545,4,3047,31736,1000,20,compiled_out
+20260714_105754,create_delete,branch,563876,13131,5755,550878,587236,2,3062,92044,1000,20,file=open.rs -p,file=close.rs -p,file=unlink.rs -p
+20260714_105754,rename,branch,1643607,34819,15260,1591503,1688259,3,9092,273863,1000,20,file=rename.rs -p
+20260714_105754,mkdir_rmdir,branch,1089594,32140,14086,1052787,1149721,2,6076,182041,1000,20,file=mkdir.rs -p,file=rmdir.rs -p
+20260714_105754,pipe_comm,branch,347380,9478,4154,332786,360543,3,5081,57142,1000,20,file=pipe.rs -p,file=read.rs -p,file=write.rs -p
+20260714_105754,fork_wait,branch,185362,3637,1594,176852,192235,3,3047,30747,1000,20,file=clone.rs -p,file=wait4.rs -p
+20260714_105754,fd_dup_close,branch,176200,3284,1439,171847,186195,2,3047,31735,1000,20,file=dup.rs -p
+20260714_110113,create_delete,static,564512,11249,4930,541284,581433,2,3061,92044,1000,20,file=open.rs -p,file=close.rs -p,file=unlink.rs -p
+20260714_110113,rename,static,1659247,29337,12857,1578111,1689926,3,9093,273863,1000,20,file=rename.rs -p
+20260714_110113,mkdir_rmdir,static,1095651,18856,8264,1055307,1128321,0,6077,182041,1000,20,file=mkdir.rs -p,file=rmdir.rs -p
+20260714_110113,pipe_comm,static,354130,5204,2281,340486,361625,1,5083,57142,1000,20,file=pipe.rs -p,file=read.rs -p,file=write.rs -p
+20260714_110113,fork_wait,static,186935,2085,914,183164,190551,1,3048,30747,1000,20,file=clone.rs -p,file=wait4.rs -p
+20260714_110113,fd_dup_close,static,181008,2917,1279,173700,187750,3,3047,31735,1000,20,file=dup.rs -p
