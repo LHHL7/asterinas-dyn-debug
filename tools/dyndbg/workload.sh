@@ -15,7 +15,7 @@ ROOT_DIR=${ROOT_DIR:-/ext2}
 WORKDIR=${WORKDIR:-$ROOT_DIR/dyndbg_workload}
 ITERS=${ITERS:-1000}
 RUNS=${RUNS:-20}
-WARMUP=${WARMUP:-5}
+WARMUP=${WARMUP:-10}
 WORKLOAD_MODE=${WORKLOAD_MODE:-static}
 CLK_TCK=${CLK_TCK:-}
 
@@ -139,8 +139,8 @@ tsc_to_us() {
 # ── Statistics (computed from per-round data file) ─────────────────
 
 compute_stats() {
-  # Reads a file with one integer per line; outputs:
-  #   n=<count> sum=<total> avg=<mean> sd=<stddev> ci95=<half-width> min=<min> max=<max>
+  # Reads a file with one integer per line; outputs space-separated values
+  # in fixed order:  n sum avg sd ci95 min max
   rounds_file=$1
 
   awk '
@@ -148,31 +148,24 @@ compute_stats() {
       vals[NR] = $1 + 0;
       sum += $1;
       sumsq += $1 * $1;
-      if (NR == 1) {
-        min = $1;
-        max = $1;
-      } else {
+      if (NR == 1) { min = $1; max = $1; }
+      else {
         if ($1 < min) min = $1;
         if ($1 > max) max = $1;
       }
     }
     END {
       n = NR;
-      if (n == 0) {
-        printf "n=0 sum=0 avg=0 sd=0 ci95=0 min=0 max=0";
-        exit;
-      }
+      if (n == 0) { print "0 0 0 0 0 0 0"; exit; }
       avg = sum / n;
+      sd = 0;
       if (n > 1) {
         variance = (sumsq - sum * sum / n) / (n - 1);
         if (variance < 0) variance = 0;
         sd = sqrt(variance);
-      } else {
-        sd = 0;
       }
       ci95 = 1.96 * sd / sqrt(n);
-      printf "n=%d sum=%.0f avg=%.0f sd=%.0f ci95=%.0f min=%.0f max=%.0f",
-             n, sum, avg, sd, ci95, min, max;
+      printf "%d %.0f %.0f %.0f %.0f %.0f %.0f", n, sum, avg, sd, ci95, min, max;
     }' "$rounds_file"
 }
 
@@ -406,14 +399,12 @@ run_one_series() {
   # ── Compute statistics ─────────────────────────────────────────
   if [ -s "$rounds_tmp" ]; then
     stats=$(compute_stats "$rounds_tmp")
-    # Parse the stats output
-    avg_us=$(echo "$stats" | awk -F= '{for(i=1;i<=NF;i++){if($i~/^avg/){gsub(/ .*/,"",$(i+1));print $(i+1);exit}}}')
-    sd_us=$(echo "$stats" | awk -F= '{for(i=1;i<=NF;i++){if($i~/^sd/){gsub(/ .*/,"",$(i+1));print $(i+1);exit}}}')
-    ci95_us=$(echo "$stats" | awk -F= '{for(i=1;i<=NF;i++){if($i~/^ci95/){gsub(/ .*/,"",$(i+1));print $(i+1);exit}}}')
-    min_us=$(echo "$stats" | awk -F= '{for(i=1;i<=NF;i++){if($i~/^min/){gsub(/ .*/,"",$(i+1));print $(i+1);exit}}}')
-    max_us=$(echo "$stats" | awk -F= '{for(i=1;i<=NF;i++){if($i~/^max/){gsub(/ .*/,"",$(i+1));print $(i+1);exit}}}')
+    # Parse: n sum avg sd ci95 min max
+    read -r _n _sum avg_us sd_us ci95_us min_us max_us <<STATS_EOF
+$stats
+STATS_EOF
 
-    echo "STATS $scenario $WORKLOAD_MODE $stats"
+    echo "STATS $scenario $WORKLOAD_MODE n=$_n avg_us=$avg_us sd_us=$sd_us ci95_us=$ci95_us min_us=$min_us max_us=$max_us"
   else
     avg_us=na sd_us=na ci95_us=na min_us=na max_us=na
     echo "STATS $scenario $WORKLOAD_MODE (no TSC data – falling back to uptime)"
