@@ -11,7 +11,7 @@ use crate::{
             sys::kernel::{
                 cap_last_cap::CapLastCapFileOps, dynamic_debug::DynamicDebugFileOps,
                 dyndbg_bench::DyndbgBenchFileOps, dyndbg_stats::DyndbgStatsFileOps,
-                pid_max::PidMaxFileOps, yama::YamaDirOps,
+                pid_max::PidMaxFileOps, tsc::TscFileOps, yama::YamaDirOps,
             },
             template::{
                 DirOps, ProcDirBuilder, lookup_child_from_table, populate_children_from_table,
@@ -27,6 +27,7 @@ mod dynamic_debug;
 mod dyndbg_bench;
 mod dyndbg_stats;
 mod pid_max;
+mod tsc;
 mod yama;
 
 /// Represents the inode at `/proc/sys/kernel`.
@@ -49,6 +50,7 @@ impl KernelDirOps {
         ("dyndbg_bench", DyndbgBenchFileOps::new_inode),
         ("dyndbg_stats", DyndbgStatsFileOps::new_inode),
         ("pid_max", PidMaxFileOps::new_inode),
+        ("tsc", TscFileOps::new_inode),
         ("yama", YamaDirOps::new_inode),
     ];
 }

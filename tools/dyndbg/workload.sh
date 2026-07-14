@@ -1,17 +1,21 @@
 #!/bin/sh
 # Test: P-01R (real workload build-variant comparison)
+# Timing: TSC-based via /proc/sys/kernel/tsc (high-precision)
+# Statistics: per-round data + mean ± sd + 95% CI
 set -eu
 
 PROC=/proc/sys/kernel/dynamic_debug
+TSC=/proc/sys/kernel/tsc
 RESULTS_DIR=${RESULTS_DIR:-/ext2/results}
 RUN_ID=${RUN_ID:-$(date +%Y%m%d_%H%M%S 2>/dev/null || echo "run_$$")}
 CSV_FILE="$RESULTS_DIR/workload/results.csv"
+PER_ROUND_CSV="$RESULTS_DIR/workload/per_round.csv"
 
 ROOT_DIR=${ROOT_DIR:-/ext2}
 WORKDIR=${WORKDIR:-$ROOT_DIR/dyndbg_workload}
 ITERS=${ITERS:-1000}
 RUNS=${RUNS:-20}
-WARMUP=${WARMUP:-1}
+WARMUP=${WARMUP:-5}
 WORKLOAD_MODE=${WORKLOAD_MODE:-static}
 CLK_TCK=${CLK_TCK:-}
 
@@ -103,12 +107,74 @@ collect_soft_metrics_end() {
   fi
 }
 
-init_clk_tck
+# ── TSC-based timing ──────────────────────────────────────────────
+# /proc/sys/kernel/tsc returns "<freq_hz> <current_tsc>" on one line.
 
-if [ ! -e "$PROC" ]; then
-  echo "dynamic_debug procfs file not found" >&2
-  exit 1
-fi
+read_tsc() {
+  if [ ! -r "$TSC" ]; then
+    echo "ERROR: $TSC not found (kernel may lack CONFIG_TSC procfs support)" >&2
+    TSC_FREQ=0
+    TSC_VAL=0
+    return 1
+  fi
+  read -r TSC_FREQ TSC_VAL < "$TSC" 2>/dev/null || {
+    TSC_FREQ=0
+    TSC_VAL=0
+    return 1
+  }
+}
+
+tsc_to_us() {
+  # Usage: tsc_to_us <tsc_start> <tsc_end> <freq>
+  # Returns microseconds as integer (stdout).
+  awk -v s="$1" -v e="$2" -v f="$3" '
+    BEGIN {
+      if (f > 0 && e > s)
+        printf "%.0f", (e - s) * 1000000 / f;
+      else
+        printf "0";
+    }'
+}
+
+# ── Statistics (computed from per-round data file) ─────────────────
+
+compute_stats() {
+  # Reads a file with one integer per line; outputs:
+  #   n=<count> sum=<total> avg=<mean> sd=<stddev> ci95=<half-width> min=<min> max=<max>
+  rounds_file=$1
+
+  awk '
+    {
+      vals[NR] = $1 + 0;
+      sum += $1;
+      sumsq += $1 * $1;
+      if (NR == 1) {
+        min = $1;
+        max = $1;
+      } else {
+        if ($1 < min) min = $1;
+        if ($1 > max) max = $1;
+      }
+    }
+    END {
+      n = NR;
+      if (n == 0) {
+        printf "n=0 sum=0 avg=0 sd=0 ci95=0 min=0 max=0";
+        exit;
+      }
+      avg = sum / n;
+      if (n > 1) {
+        variance = (sumsq - sum * sum / n) / (n - 1);
+        if (variance < 0) variance = 0;
+        sd = sqrt(variance);
+      } else {
+        sd = 0;
+      }
+      ci95 = 1.96 * sd / sqrt(n);
+      printf "n=%d sum=%.0f avg=%.0f sd=%.0f ci95=%.0f min=%.0f max=%.0f",
+             n, sum, avg, sd, ci95, min, max;
+    }' "$rounds_file"
+}
 
 run_rule() {
   echo "$1" > "$PROC"
@@ -117,7 +183,11 @@ run_rule() {
 ensure_csv() {
   if [ ! -e "$CSV_FILE" ]; then
     mkdir -p "$(dirname "$CSV_FILE")"
-    echo "run_id,workload,workload_mode,elapsed_ms,task_clock_ms,context_switches,page_faults,iters,runs,rules" > "$CSV_FILE"
+    echo "run_id,workload,workload_mode,avg_us,sd_us,ci95_us,min_us,max_us,task_clock_ms,context_switches,page_faults,iters,runs,rules" > "$CSV_FILE"
+  fi
+  if [ ! -e "$PER_ROUND_CSV" ]; then
+    mkdir -p "$(dirname "$PER_ROUND_CSV")"
+    echo "run_id,workload,workload_mode,round,duration_us" > "$PER_ROUND_CSV"
   fi
 }
 
@@ -263,9 +333,7 @@ apply_static_rules() {
 run_one_series() {
   scenario=$1
   runner=$2
-  state=$3
 
-  ELAPSED_MS=na
   TASK_CLOCK_MS=na
   CONTEXT_SWITCHES=na
   PAGE_FAULTS=na
@@ -277,6 +345,7 @@ run_one_series() {
   page_fault_ok=0
   i=0
 
+  # ── Warmup rounds (output discarded) ──────────────────────────
   if [ "$WARMUP" -gt 0 ]; then
     while [ "$i" -lt "$WARMUP" ]; do
       prepare_workdir
@@ -285,14 +354,28 @@ run_one_series() {
     done
   fi
 
-  # Single read before all runs (same approach as C-02/C-03, proven accurate)
-  start=$(read_uptime)
+  # ── Measurement rounds: TSC timing per round ──────────────────
+  rounds_tmp="${TMPDIR:-/tmp}/dyndbg_workload_rounds_$$.tmp"
+  : > "$rounds_tmp"
 
   i=1
   while [ "$i" -le "$RUNS" ]; do
     prepare_workdir
+
+    # Read TSC before
+    if ! read_tsc; then
+      echo "TSC read failed, falling back to uptime" >&2
+      break
+    fi
+    tsc_start=$TSC_VAL
+    tsc_freq=$TSC_FREQ
+
+    # Soft metrics (optional, best-effort)
     collect_soft_metrics_begin
+
+    # Run the workload
     ( "$runner" )
+
     collect_soft_metrics_end
     if [ "$TASK_CLOCK_MS" != "na" ]; then
       total_task_clock_ms=$((total_task_clock_ms + TASK_CLOCK_MS))
@@ -306,12 +389,51 @@ run_one_series() {
       total_page_faults=$((total_page_faults + PAGE_FAULTS))
       page_fault_ok=1
     fi
+
+    # Read TSC after
+    read_tsc || true
+    tsc_end=$TSC_VAL
+
+    # Duration in microseconds
+    duration_us=$(tsc_to_us "$tsc_start" "$tsc_end" "$tsc_freq")
+
+    echo "$duration_us" >> "$rounds_tmp"
+    echo "$RUN_ID,$scenario,$WORKLOAD_MODE,$i,$duration_us" >> "$PER_ROUND_CSV"
+
     i=$((i + 1))
   done
 
-  end=$(read_uptime)
+  # ── Compute statistics ─────────────────────────────────────────
+  if [ -s "$rounds_tmp" ]; then
+    stats=$(compute_stats "$rounds_tmp")
+    # Parse the stats output
+    avg_us=$(echo "$stats" | awk -F= '{for(i=1;i<=NF;i++){if($i~/^avg/){gsub(/ .*/,"",$(i+1));print $(i+1);exit}}}')
+    sd_us=$(echo "$stats" | awk -F= '{for(i=1;i<=NF;i++){if($i~/^sd/){gsub(/ .*/,"",$(i+1));print $(i+1);exit}}}')
+    ci95_us=$(echo "$stats" | awk -F= '{for(i=1;i<=NF;i++){if($i~/^ci95/){gsub(/ .*/,"",$(i+1));print $(i+1);exit}}}')
+    min_us=$(echo "$stats" | awk -F= '{for(i=1;i<=NF;i++){if($i~/^min/){gsub(/ .*/,"",$(i+1));print $(i+1);exit}}}')
+    max_us=$(echo "$stats" | awk -F= '{for(i=1;i<=NF;i++){if($i~/^max/){gsub(/ .*/,"",$(i+1));print $(i+1);exit}}}')
 
-  ELAPSED_MS=$(awk -v s="$start" -v e="$end" -v r="$RUNS" 'BEGIN{printf "%.0f", (e-s)*1000/r}')
+    echo "STATS $scenario $WORKLOAD_MODE $stats"
+  else
+    avg_us=na sd_us=na ci95_us=na min_us=na max_us=na
+    echo "STATS $scenario $WORKLOAD_MODE (no TSC data – falling back to uptime)"
+
+    # Fallback: use uptime-based timing for backward compatibility
+    start=$(read_uptime)
+    i=1
+    while [ "$i" -le "$RUNS" ]; do
+      prepare_workdir
+      ( "$runner" )
+      i=$((i + 1))
+    done
+    end=$(read_uptime)
+    avg_us=$(awk -v s="$start" -v e="$end" -v r="$RUNS" 'BEGIN{printf "%.0f", (e-s)*1e6/r}')
+    sd_us=na ci95_us=na min_us=na max_us=na
+  fi
+
+  rm -f "$rounds_tmp"
+
+  # Soft metric averages
   if [ "$task_clock_ok" -ne 0 ]; then
     TASK_CLOCK_MS=$((total_task_clock_ms / RUNS))
   else
@@ -337,20 +459,17 @@ run_workload_case() {
 
   case "$WORKLOAD_MODE" in
     baseline)
-      run_one_series "$workload" "$runner" "baseline"
-      elapsed_ms=$ELAPSED_MS
+      run_one_series "$workload" "$runner"
       rules="compiled_out"
       ;;
     branch)
       apply_static_rules "$workload"
-      run_one_series "$workload" "$runner" "branch"
-      elapsed_ms=$ELAPSED_MS
+      run_one_series "$workload" "$runner"
       rules=$(workload_rules "$workload")
       ;;
     static)
       apply_static_rules "$workload"
-      run_one_series "$workload" "$runner" "static"
-      elapsed_ms=$ELAPSED_MS
+      run_one_series "$workload" "$runner"
       rules=$(workload_rules "$workload")
       ;;
     *)
@@ -360,10 +479,17 @@ run_workload_case() {
   esac
 
   ensure_csv
-  emit_result "test=P-01R workload=$workload workload_mode=$WORKLOAD_MODE elapsed_ms=$elapsed_ms task_clock_ms=$TASK_CLOCK_MS context_switches=$CONTEXT_SWITCHES page_faults=$PAGE_FAULTS iters=$ITERS runs=$RUNS rules=$rules run_id=$RUN_ID"
-  echo "$RUN_ID,$workload,$WORKLOAD_MODE,$elapsed_ms,$TASK_CLOCK_MS,$CONTEXT_SWITCHES,$PAGE_FAULTS,$ITERS,$RUNS,$rules" >> "$CSV_FILE"
+  emit_result "test=P-01R workload=$workload workload_mode=$WORKLOAD_MODE avg_us=$avg_us sd_us=$sd_us ci95_us=$ci95_us min_us=$min_us max_us=$max_us task_clock_ms=$TASK_CLOCK_MS context_switches=$CONTEXT_SWITCHES page_faults=$PAGE_FAULTS iters=$ITERS runs=$RUNS rules=$rules run_id=$RUN_ID"
+  echo "$RUN_ID,$workload,$WORKLOAD_MODE,$avg_us,$sd_us,$ci95_us,$min_us,$max_us,$TASK_CLOCK_MS,$CONTEXT_SWITCHES,$PAGE_FAULTS,$ITERS,$RUNS,$rules" >> "$CSV_FILE"
   run_rule "clear"
 }
+
+init_clk_tck
+
+if [ ! -e "$PROC" ]; then
+  echo "dynamic_debug procfs file not found" >&2
+  exit 1
+fi
 
 run_workload_case "create_delete" scenario_create_delete
 run_workload_case "rename" scenario_rename
