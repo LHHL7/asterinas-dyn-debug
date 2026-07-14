@@ -289,12 +289,19 @@ impl DirEntryIter<'_> {
     }
 }
 
+// Inline(never) prevents the compiler from duplicating the dyndbg asm
+// symbols when Iterator::next() is codegen'd in multiple compilation units.
+#[inline(never)]
+fn trace_ext2_dir_entry_scan() {
+    debug!("dyndbg: ext2 dir entry scan");
+}
+
 impl Iterator for DirEntryIter<'_> {
     type Item = DirEntryItem;
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            debug!("dyndbg: ext2 dir entry scan");
+            trace_ext2_dir_entry_scan();
             let next_item = self.read_next_dir_entry()?;
 
             // Skip an entry if it is not used (ino == 0, see [1]) or its file type is unknown.
