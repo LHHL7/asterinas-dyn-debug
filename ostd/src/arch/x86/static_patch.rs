@@ -152,15 +152,10 @@ fn validate_patch_requests(requests: &[PatchRequest]) -> Result<(), PatchError> 
 }
 
 fn apply_patch_transaction(requests: &[PatchRequest]) -> Result<(), PatchError> {
-    let _patch_guard = PATCH_LOCK.lock();
+    let _patch_guard = PATCH_LOCK.disable_irq().lock();
 
     let mut target_count = 0usize;
     if num_cpus() > 1 && !crate::IN_BOOTSTRAP_CONTEXT.load(Ordering::Relaxed) {
-        // 检查本地中断开关
-        if !crate::arch::irq::is_local_enabled() {
-            return Err(PatchError::IrqsDisabled);
-        }
-
         //检查IPI发送器是否初始化完成
         if crate::smp::IPI_SENDER.get().is_none() {
             return Err(PatchError::SmpNotReady);
