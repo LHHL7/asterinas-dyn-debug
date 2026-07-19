@@ -135,7 +135,12 @@ run_case() {
   echo "$RUN_ID,$case_name,$patch_backend,$PATCH_MODE,$PATCH_ITERS,$expected_behavior,$actual_behavior,$status,$elapsed,$enable_elapsed,$clear_elapsed,$modules_repatched,$sites_patched,$patch_transactions" >> "$CSV_FILE"
 }
 
-run_case per_site P-02-per-site
-run_case batch P-02-batch
+PATCH_RUNS=${PATCH_RUNS:-10}
+run_num=1
+while [ "$run_num" -le "$PATCH_RUNS" ]; do
+    run_case per_site "P-02-per-site-run${run_num}"
+    run_case batch   "P-02-batch-run${run_num}"
+    run_num=$((run_num + 1))
+done
 
-echo "patch bench finished"
+echo "patch bench finished (runs: $PATCH_RUNS)"
