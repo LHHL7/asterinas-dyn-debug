@@ -3,6 +3,7 @@
 let
   boot_hello = builtins.path { path = ./../src/boot_hello.sh; };
   dyndbg_tools = builtins.path { path = ./../../../tools/dyndbg; };
+  # Scan dyndbg_bench.rs for the first "aster_logger::dyndbg_debug!" call site.
   dyndbg_bench_rs = builtins.readFile ./../../../kernel/src/fs/fs_impls/procfs/sys/kernel/dyndbg_bench.rs;
   dyndbg_bench_lines = lib.splitString "\n" dyndbg_bench_rs;
   findLine = lines: lineNo:
@@ -10,7 +11,23 @@ let
       lineNo
     else
       findLine (builtins.tail lines) (lineNo + 1);
-  dyndbg_line = findLine dyndbg_bench_lines 1;
+  dyndbg_bench_line = findLine dyndbg_bench_lines 1;
+
+  # Also scan bench_sites.rs for the first synthetic entry (bench_log_0).
+  # This is always on a fixed line (32) regardless of N, but we detect it
+  # dynamically to stay robust against HEADER changes.
+  dyndbg_sites_rs = builtins.readFile ./../../../kernel/src/fs/fs_impls/procfs/sys/kernel/dyndbg_bench/bench_sites.rs;
+  dyndbg_sites_lines = lib.splitString "\n" dyndbg_sites_rs;
+  findSiteLine = lines: lineNo:
+    if lines == [] then null else if lib.hasInfix "bench_log_0 =>" (builtins.head lines) then
+      lineNo
+    else
+      findSiteLine (builtins.tail lines) (lineNo + 1);
+  dyndbg_sites_line = findSiteLine dyndbg_sites_lines 1;
+
+  # Prefer synthetic sites' line if present; otherwise fall back to dyndbg_bench.rs.
+  dyndbg_line = if dyndbg_sites_line != null then dyndbg_sites_line else dyndbg_bench_line;
+  dyndbg_file = if dyndbg_sites_line != null then "bench_sites.rs" else "dyndbg_bench.rs";
   etc = lib.fileset.toSource {
     root = ./../src/etc;
     fileset = ./../src/etc;
@@ -49,6 +66,7 @@ in stdenvNoCC.mkDerivation {
     mkdir -p $out/test/dyndbg
     cp -r ${dyndbg_tools}/* $out/test/dyndbg/
     echo ${toString (if dyndbg_line == null then 196 else dyndbg_line)} > $out/etc/dyndbg_line.txt
+    echo ${toString dyndbg_file} > $out/etc/dyndbg_file.txt
 
     cp -r ${etc}/* $out/etc/
 

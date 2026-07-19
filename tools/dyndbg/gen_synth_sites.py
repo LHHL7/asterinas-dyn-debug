@@ -5,9 +5,14 @@ Generate bench_sites.rs with a configurable number of synthetic dyndbg descripto
 Usage:
   python3 gen_synth_sites.py N > bench_sites.rs       # N descriptors
   python3 gen_synth_sites.py 500                       # 500 descriptors (default)
+  python3 gen_synth_sites.py 500 --line-out LINE_FILE  # also write entry line number
 
 All descriptors share file="bench_sites.rs", module="dyndbg_bench".
 Function names are bench_log_N with unique line numbers for each.
+
+The first entry (bench_log_0) always lands on the same line regardless of N,
+because the HEADER template has a fixed number of lines.  Use --line-out to
+persist that line number for scripts that need it (e.g. index_ablation.sh).
 """
 
 import sys
@@ -47,9 +52,27 @@ gen_bench_logs! {{
 FOOTER = '''}
 '''
 
+# The first dyndbg_debug_site! entry always lands on this line.
+# HEADER has N newlines → HEADER occupies N lines.
+# print() appends an extra newline (since HEADER already ends with \n).
+# So the first entry line = HEADER.count('\n') + 2.
+FIRST_ENTRY_LINE = HEADER.count('\n') + 2
+
 
 def main():
-    n = int(sys.argv[1]) if len(sys.argv) > 1 else 500
+    args = [a for a in sys.argv[1:] if not a.startswith('--line-out')]
+    line_out = None
+    for i, a in enumerate(sys.argv[1:]):
+        if a == '--line-out' and i + 2 < len(sys.argv):
+            line_out = sys.argv[i + 2]
+            break
+
+    n = int(args[0]) if args else 500
+
+    if line_out:
+        with open(line_out, 'w') as f:
+            f.write(f"{FIRST_ENTRY_LINE}\n")
+        print(f"# wrote bench_log_0 line number ({FIRST_ENTRY_LINE}) to {line_out}", file=sys.stderr)
 
     print(HEADER.format(count=n))
 

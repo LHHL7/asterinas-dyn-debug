@@ -15,7 +15,11 @@ STATS=/proc/sys/kernel/dyndbg_stats
 BENCH=/proc/sys/kernel/dyndbg_bench
 
 MODULE_KEY=${MODULE_KEY:-dyndbg_bench}
-FILE_KEY=${FILE_KEY:-dyndbg_bench.rs}
+# FILE_KEY: synthetic sites use "bench_sites.rs"; real sites use "dyndbg_bench.rs".
+# Prefer the env var; then try /etc/dyndbg_file.txt (set by Nix for synthetic sites);
+# otherwise fall back to the original default.
+_SYNTH_FILE=$(cat /etc/dyndbg_file.txt 2>/dev/null || echo "")
+FILE_KEY=${FILE_KEY:-${_SYNTH_FILE:-dyndbg_bench.rs}}
 FUNC_KEY=${FUNC_KEY:-bench_log_0}
 LINE_KEY=${LINE_KEY:-$(cat /etc/dyndbg_line.txt 2>/dev/null || echo "215")}
 INDEX_ITERS=${INDEX_ITERS:-10000}
