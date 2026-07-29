@@ -12,6 +12,7 @@ pub(crate) mod iommu;
 pub(crate) mod irq;
 pub(crate) mod mm;
 pub mod serial;
+pub mod static_key;
 pub(crate) mod task;
 mod timer;
 pub mod trap;

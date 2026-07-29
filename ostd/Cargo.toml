@@ -26,6 +26,7 @@ id-alloc.workspace = true
 inherit-methods-macro.workspace = true
 int-to-c-enum.workspace = true
 intrusive-collections.workspace = true
+linkme.workspace = true
 linux-boot-params.workspace = true
 log.workspace = true
 minicov = { workspace = true, optional = true }

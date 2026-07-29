@@ -1382,6 +1382,7 @@ dependencies = [
  "inherit-methods-macro",
  "int-to-c-enum",
  "intrusive-collections",
+ "linkme",
  "linux-boot-params",
  "log",
  "loongArch64",

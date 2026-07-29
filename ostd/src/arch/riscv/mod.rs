@@ -13,6 +13,7 @@ pub mod irq;
 pub(crate) mod mm;
 mod power;
 pub(crate) mod serial;
+pub mod static_key;
 pub(crate) mod task;
 mod timer;
 pub mod trap;

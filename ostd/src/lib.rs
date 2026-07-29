@@ -55,6 +55,11 @@ pub use ostd_macros::{
     panic_handler,
 };
 
+// Re-export so that the static_key_branch! macro can use
+// `$crate::distributed_slice` without callers importing linkme themselves.
+#[doc(hidden)]
+pub use linkme::distributed_slice;
+
 pub use self::{error::Error, prelude::Result};
 
 /// Initializes OSTD.
@@ -107,6 +112,8 @@ unsafe fn init() {
     sync::init();
 
     boot::init_after_heap();
+
+    arch::static_key::init_static_keys();
 
     // SAFETY: This function is called only once on the BSP.
     unsafe { arch::late_init_on_bsp() };
