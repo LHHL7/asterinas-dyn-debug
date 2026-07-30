@@ -60,6 +60,18 @@ pub use ostd_macros::{
 #[doc(hidden)]
 pub use linkme::distributed_slice;
 
+/// Zero-overhead static branch: disabled=NOP5, enabled=JMP to guarded block.
+///
+/// Thin re-export so rust-analyzer can resolve the macro without chasing
+/// `#[cfg_attr(path = ...)]`.  The real implementation lives in
+/// `arch::static_key::_static_key_branch_impl`.
+#[macro_export]
+macro_rules! static_key_branch {
+    ($($tt:tt)*) => {
+        $crate::_static_key_branch_impl!($($tt)*);
+    };
+}
+
 pub use self::{error::Error, prelude::Result};
 
 /// Initializes OSTD.

@@ -7,6 +7,7 @@
 use alloc::{boxed::Box, sync::Arc};
 use core::{fmt, ops::Bound, sync::atomic::Ordering};
 
+use crate::sched::sched_trace;
 use ostd::{
     arch::read_tsc as sched_clock,
     cpu::{CpuId, CpuSet, PinCurrentCpu, all_cpus},
@@ -336,6 +337,8 @@ impl ClassScheduler {
 
 impl PerCpuClassRqSet {
     fn pick_next_entity(&mut self) -> Option<SchedEntity> {
+        sched_trace::trace_pick_next();
+
         (self.stop.pick_next())
             .or_else(|| self.real_time.pick_next())
             .or_else(|| self.fair.pick_next())

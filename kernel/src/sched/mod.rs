@@ -2,6 +2,7 @@
 
 mod nice;
 mod sched_class;
+pub mod sched_trace;
 mod stats;
 
 pub use self::{

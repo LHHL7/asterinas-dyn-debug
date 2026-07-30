@@ -1048,6 +1048,7 @@ macro_rules! dyndbg_debug {
                     ostd::arch::static_key::StaticKeySite::new(
                         __dyndbg_site,
                         __dyndbg_target,
+                        "dyndbg",
                     );
                 #[ostd::distributed_slice(ostd::arch::static_key::STATIC_KEY_SITE_REGISTRY)]
                 static STATIC_KEY_REG_ENTRY: &ostd::arch::static_key::StaticKeySite =
@@ -1237,6 +1238,7 @@ macro_rules! dyndbg_debug_site {
                     ostd::arch::static_key::StaticKeySite::new(
                         __dyndbg_site,
                         __dyndbg_target,
+                        "dyndbg",
                     );
                 #[ostd::distributed_slice(ostd::arch::static_key::STATIC_KEY_SITE_REGISTRY)]
                 static STATIC_KEY_REG_ENTRY: &ostd::arch::static_key::StaticKeySite =
@@ -1393,6 +1395,7 @@ macro_rules! dyndbg_debug_func {
                     ostd::arch::static_key::StaticKeySite::new(
                         __dyndbg_site,
                         __dyndbg_target,
+                        "dyndbg",
                     );
                 #[ostd::distributed_slice(ostd::arch::static_key::STATIC_KEY_SITE_REGISTRY)]
                 static STATIC_KEY_REG_ENTRY: &ostd::arch::static_key::StaticKeySite =
