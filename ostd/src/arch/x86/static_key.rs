@@ -34,7 +34,7 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use linkme::distributed_slice;
-use super::static_patch::{self, PatchError, PatchInstruction, PatchRequest};
+use super::static_patch::{self, PatchInstruction, PatchRequest};
 
 /// A compile-time-registered static branch site.
 ///
@@ -44,23 +44,24 @@ use super::static_patch::{self, PatchError, PatchInstruction, PatchRequest};
 /// - a runtime flag tracking the current state.
 #[derive(Debug)]
 pub struct StaticKeySite {
-    /// Address of the 5-byte patch slot in `.text`.
-    instruction_site: usize,
+    /// Address of the 5-byte patch slot in `.text` (stored as a function
+    /// pointer to avoid const-eval pointer-to-int restrictions).
+    instruction_site: unsafe extern "C" fn() -> bool,
     /// Address to jump to when enabled.
-    jump_target: usize,
+    jump_target: unsafe extern "C" fn() -> bool,
     /// Whether the key is currently enabled.
     enabled: AtomicBool,
 }
 
 impl StaticKeySite {
-    /// Create a static-key site from the two addresses provided by the macro.
-    ///
-    /// The caller (the `static_key_branch!` macro) guarantees that:
-    /// - `instruction_site` points to a writable executable 5-byte NOP5 slot,
-    /// - `jump_target` is within `rel32` range of the site,
-    /// - both addresses are stable for the lifetime of the kernel.
+    /// Create a static-key site from the two function pointers provided by the
+    /// macro.  The pointer-to-`usize` conversion is deferred to patch time so
+    /// that the `static` initialiser stays valid in const context.
     #[doc(hidden)]
-    pub const fn new(instruction_site: usize, jump_target: usize) -> Self {
+    pub const fn new(
+        instruction_site: unsafe extern "C" fn() -> bool,
+        jump_target: unsafe extern "C" fn() -> bool,
+    ) -> Self {
         Self {
             instruction_site,
             jump_target,
@@ -88,41 +89,47 @@ pub static STATIC_KEY_SITE_REGISTRY: [&'static StaticKeySite];
 ///
 /// Each site whose `enabled` flag is currently `false` is patched from NOP5
 /// to `JMP rel32`.  Sites that are already enabled are silently skipped.
-/// Returns an error if any site address is invalid.
-pub fn enable_static_keys(sites: &[&'static StaticKeySite]) -> Result<(), PatchError> {
+/// Errors are logged but not propagated so callers get a uniform API across
+/// architectures.
+pub fn enable_static_keys(sites: &[&'static StaticKeySite]) {
     let requests: alloc::vec::Vec<PatchRequest> = sites
         .iter()
         .filter(|s| !s.enabled.swap(true, Ordering::AcqRel))
         .map(|s| PatchRequest {
-            instruction_address: s.instruction_site,
+            instruction_address: s.instruction_site as usize,
             instruction: PatchInstruction::JmpRel32 {
-                target: s.jump_target,
+                target: s.jump_target as usize,
             },
         })
         .collect();
     if requests.is_empty() {
-        return Ok(());
+        return;
     }
-    static_patch::patch_5byte_slots(&requests)
+    if let Err(e) = static_patch::patch_5byte_slots(&requests) {
+        log::warn!("[static_key] enable failed: {:?}", e);
+    }
 }
 
 /// Disable a batch of static keys in one SMP-safe transaction.
 ///
 /// Each site whose `enabled` flag is currently `true` is patched back from
 /// `JMP rel32` to NOP5.  Sites that are already disabled are silently skipped.
-pub fn disable_static_keys(sites: &[&'static StaticKeySite]) -> Result<(), PatchError> {
+/// Errors are logged but not propagated.
+pub fn disable_static_keys(sites: &[&'static StaticKeySite]) {
     let requests: alloc::vec::Vec<PatchRequest> = sites
         .iter()
         .filter(|s| s.enabled.swap(false, Ordering::AcqRel))
         .map(|s| PatchRequest {
-            instruction_address: s.instruction_site,
+            instruction_address: s.instruction_site as usize,
             instruction: PatchInstruction::Nop5,
         })
         .collect();
     if requests.is_empty() {
-        return Ok(());
+        return;
     }
-    static_patch::patch_5byte_slots(&requests)
+    if let Err(e) = static_patch::patch_5byte_slots(&requests) {
+        log::warn!("[static_key] disable failed: {:?}", e);
+    }
 }
 
 /// Called once at boot to log the static-key registry size.

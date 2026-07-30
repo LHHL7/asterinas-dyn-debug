@@ -12,7 +12,11 @@ use core::{
 
 use log::{Metadata, Record};
 use linkme::distributed_slice;
-use ostd::{sync::SpinLock, timer::Jiffies};
+use ostd::{
+    arch::static_key::{self, StaticKeySite},
+    sync::SpinLock,
+    timer::Jiffies,
+};
 
 /// The logger used for Asterinas.
 struct AsterLogger;
@@ -107,30 +111,26 @@ impl ModuleState {
     }
 }
 
-#[allow(dead_code)]
+/// Links a [`DebugDescriptor`] to the [`StaticKeySite`] that gates its hot path.
+///
+/// Populated at compile time by the `dyndbg_debug!` macro and consumed at boot
+/// by [`pre_register_dyndbg_keys`] to build the per-module site vectors.
 #[derive(Debug, Clone, Copy)]
-struct PatchSite {
-    instruction_address: usize,
-    metadata: PatchSiteMetadata,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy)]
-struct PatchSiteMetadata {
-    jump_target: usize,
-    descriptor_address: usize,
+pub struct DyndbgKeyMapping {
+    pub descriptor: &'static DebugDescriptor,
+    pub static_key_site: &'static StaticKeySite,
 }
 
 struct ModuleKey {
     enabled: bool,
-    patch_sites: Vec<PatchSite>,
+    static_key_sites: Vec<&'static StaticKeySite>,
 }
 
 impl ModuleKey {
     fn new() -> Self {
         Self {
             enabled: false,
-            patch_sites: Vec::new(),
+            static_key_sites: Vec::new(),
         }
     }
 }
@@ -139,16 +139,13 @@ impl ModuleKey {
 #[distributed_slice]
 pub static DYNDBG_DESCRIPTOR_REGISTRY: [&'static DebugDescriptor];
 
+/// Distributed slice mapping each dyndbg call site to its [`StaticKeySite`].
+///
+/// Populated at link time by the `dyndbg_debug!` macro.  Consumed at boot by
+/// `pre_register_dyndbg_keys()` to organise sites per module for batch patching.
 #[distributed_slice]
-pub static DYNDBG_PATCH_SITE_REGISTRY: [&'static DyndbgPatchSiteRegistration];
+pub static DYNDBG_KEY_MAPPING: [&'static DyndbgKeyMapping];
 
-// 现在注册patchsite信息需要site和target
-#[derive(Debug, Clone, Copy)]
-pub struct DyndbgPatchSiteRegistration {
-    pub descriptor: &'static DebugDescriptor,
-    pub instruction_site: unsafe extern "C" fn() -> bool,
-    pub jump_target: unsafe extern "C" fn() -> bool,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DyndbgRuleAction {
@@ -249,29 +246,17 @@ impl DyndbgState {
         }
     }
 
-    //把编译期收集的信息存入module key
-    fn register_patch_site_registration(&mut self, registration: &'static DyndbgPatchSiteRegistration) {
-        let module_id = registration.descriptor.module_id();
+    //把编译期收集的 StaticKeySite 按模块分组。
+    fn register_dyndbg_key(&mut self, mapping: &'static DyndbgKeyMapping) {
+        let module_id = mapping.descriptor.module_id();
         if module_id == UNASSIGNED_MODULE_ID {
             return;
         }
 
-        // 构造patchsite
-        let instruction_address = registration.instruction_site as usize;
-        let jump_target = registration.jump_target as usize;
-        let patch_site = PatchSite {
-            instruction_address,
-            metadata: PatchSiteMetadata {
-                jump_target,
-                descriptor_address: descriptor_id(registration.descriptor),
-            },
-        };
-
-        // 存入module key里
         let current_enabled = module_enabled(module_id);
         let module_key = self.module_keys.entry(module_id).or_insert_with(ModuleKey::new);
         module_key.enabled = current_enabled;
-        module_key.patch_sites.push(patch_site);
+        module_key.static_key_sites.push(mapping.static_key_site);
 
         if current_enabled {
             patch_module_sites(module_key, true);
@@ -552,108 +537,39 @@ fn all_descriptors() -> Vec<&'static DebugDescriptor> {
     DYNDBG_DESCRIPTOR_REGISTRY.to_vec()
 }
 
-// 模块级别的指令修补
-#[cfg(target_arch = "x86_64")]
+// 模块级别的指令修补：委托给 StaticKey 通用原语。
 fn patch_module_sites(module_key: &ModuleKey, enabled: bool) {
+    let sites: Vec<&StaticKeySite> = module_key.static_key_sites.iter().copied().collect();
+    if sites.is_empty() {
+        return;
+    }
+
+    let n_sites = sites.len();
+
     match get_dyndbg_patch_backend() {
-        DyndbgPatchBackend::PerSite => patch_module_sites_per_site(module_key, enabled),
-        DyndbgPatchBackend::Batch => patch_module_sites_batch(module_key, enabled),
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-fn patch_module_sites_per_site(module_key: &ModuleKey, enabled: bool) {
-    use ostd::arch::static_patch::{patch_5byte_slot, PatchInstruction};
-
-    let mut patched_sites = 0usize;
-    for site in &module_key.patch_sites {
-        // 0是占位符，还没填充真实地址 则跳过
-        if site.instruction_address == 0 {
-            continue;
+        DyndbgPatchBackend::Batch => {
+            if enabled {
+                static_key::enable_static_keys(&sites);
+            } else {
+                static_key::disable_static_keys(&sites);
+            }
+            DYNDBG_PATCH_TRANSACTIONS.fetch_add(1, Ordering::Relaxed);
         }
-
-        // 生成要修补的指令。
-        let instruction = if enabled {
-            if site.metadata.jump_target == 0 {
-                continue;
+        DyndbgPatchBackend::PerSite => {
+            for site in &sites {
+                if enabled {
+                    static_key::enable_static_keys(core::slice::from_ref(site));
+                } else {
+                    static_key::disable_static_keys(core::slice::from_ref(site));
+                }
             }
-            PatchInstruction::JmpRel32 {
-                target: site.metadata.jump_target,
-            }
-        } else {
-            PatchInstruction::Nop5
-        };
-
-        patched_sites += 1;
-        if let Err(error) = patch_5byte_slot(site.instruction_address, instruction) {
-            log::warn!(
-                "dyndbg per-site patch failed: module_enabled={}, site=0x{:x}, error={:?}",
-                enabled,
-                site.instruction_address,
-                error
-            );
+            DYNDBG_PATCH_TRANSACTIONS.fetch_add(n_sites as u64, Ordering::Relaxed);
         }
     }
 
-    if patched_sites == 0 {
-        return;
-    }
-
-    DYNDBG_PATCH_TRANSACTIONS.fetch_add(patched_sites as u64, Ordering::Relaxed);
     DYNDBG_MODULES_REPATCHED.fetch_add(1, Ordering::Relaxed);
-    DYNDBG_SITES_PATCHED.fetch_add(patched_sites as u64, Ordering::Relaxed);
+    DYNDBG_SITES_PATCHED.fetch_add(n_sites as u64, Ordering::Relaxed);
 }
-
-#[cfg(target_arch = "x86_64")]
-fn patch_module_sites_batch(module_key: &ModuleKey, enabled: bool) {
-    use ostd::arch::static_patch::{patch_5byte_slots, PatchInstruction, PatchRequest};
-
-    let mut requests = Vec::new();
-    for site in &module_key.patch_sites {
-        // 0是占位符，还没填充真实地址 则跳过
-        if site.instruction_address == 0 {
-            continue;
-        }
-
-        // 生成要修补的指令。
-        let instruction = if enabled {
-            if site.metadata.jump_target == 0 {
-                continue;
-            }
-            PatchInstruction::JmpRel32 {
-                target: site.metadata.jump_target,
-            }
-        } else {
-            PatchInstruction::Nop5
-        };
-
-        requests.push(PatchRequest {
-            instruction_address: site.instruction_address,
-            instruction,
-        });
-    }
-
-    if requests.is_empty() {
-        return;
-    }
-
-    DYNDBG_PATCH_TRANSACTIONS.fetch_add(1, Ordering::Relaxed);
-    DYNDBG_MODULES_REPATCHED.fetch_add(1, Ordering::Relaxed);
-    DYNDBG_SITES_PATCHED.fetch_add(requests.len() as u64, Ordering::Relaxed);
-
-    if let Err(error) = patch_5byte_slots(&requests) {
-        log::warn!(
-            "dyndbg batch patch failed: module_enabled={}, sites={}, error={:?}",
-            enabled,
-            requests.len(),
-            error
-        );
-    }
-}
-
-// 非x86架构暂未实现，提供空实现  
-#[cfg(not(target_arch = "x86_64"))]
-fn patch_module_sites(_module_key: &ModuleKey, _enabled: bool) {}
 
 // 安全的原子减法
 fn saturating_fetch_sub_u32(counter: &AtomicU32) {
@@ -778,10 +694,10 @@ fn pre_register_dyndbg_descriptors() {
     }
 }
 
-fn pre_register_dyndbg_patch_sites() {
+fn pre_register_dyndbg_keys() {
     let mut state = DYNDBG_STATE.lock();
-    for registration in DYNDBG_PATCH_SITE_REGISTRY {
-        state.register_patch_site_registration(registration);
+    for mapping in DYNDBG_KEY_MAPPING {
+        state.register_dyndbg_key(mapping);
     }
 }
 
@@ -1128,15 +1044,23 @@ macro_rules! dyndbg_debug {
                     fn __dyndbg_target() -> bool;
                 }
 
-                static DYNDBG_PATCH_SITE: $crate::DyndbgPatchSiteRegistration =
-                    $crate::DyndbgPatchSiteRegistration {
+                static STATIC_KEY_SITE: ostd::arch::static_key::StaticKeySite =
+                    ostd::arch::static_key::StaticKeySite::new(
+                        __dyndbg_site,
+                        __dyndbg_target,
+                    );
+                #[ostd::distributed_slice(ostd::arch::static_key::STATIC_KEY_SITE_REGISTRY)]
+                static STATIC_KEY_REG_ENTRY: &ostd::arch::static_key::StaticKeySite =
+                    &STATIC_KEY_SITE;
+
+                static DYNDBG_KEY_MAPPING: $crate::DyndbgKeyMapping =
+                    $crate::DyndbgKeyMapping {
                         descriptor: &DESCRIPTOR,
-                        instruction_site: __dyndbg_site,
-                        jump_target: __dyndbg_target,
+                        static_key_site: &STATIC_KEY_SITE,
                     };
-                #[$crate::distributed_slice($crate::DYNDBG_PATCH_SITE_REGISTRY)]
-                static DYNDBG_PATCH_SITE_ENTRY: &'static $crate::DyndbgPatchSiteRegistration =
-                    &DYNDBG_PATCH_SITE;
+                #[$crate::distributed_slice($crate::DYNDBG_KEY_MAPPING)]
+                static DYNDBG_KEY_MAPPING_ENTRY: &'static $crate::DyndbgKeyMapping =
+                    &DYNDBG_KEY_MAPPING;
             }
             #[cfg(not(target_arch = "x86_64"))]
             {
@@ -1309,15 +1233,23 @@ macro_rules! dyndbg_debug_site {
                     fn __dyndbg_target() -> bool;
                 }
 
-                static DYNDBG_PATCH_SITE: $crate::DyndbgPatchSiteRegistration =
-                    $crate::DyndbgPatchSiteRegistration {
+                static STATIC_KEY_SITE: ostd::arch::static_key::StaticKeySite =
+                    ostd::arch::static_key::StaticKeySite::new(
+                        __dyndbg_site,
+                        __dyndbg_target,
+                    );
+                #[ostd::distributed_slice(ostd::arch::static_key::STATIC_KEY_SITE_REGISTRY)]
+                static STATIC_KEY_REG_ENTRY: &ostd::arch::static_key::StaticKeySite =
+                    &STATIC_KEY_SITE;
+
+                static DYNDBG_KEY_MAPPING: $crate::DyndbgKeyMapping =
+                    $crate::DyndbgKeyMapping {
                         descriptor: &DESCRIPTOR,
-                        instruction_site: __dyndbg_site,
-                        jump_target: __dyndbg_target,
+                        static_key_site: &STATIC_KEY_SITE,
                     };
-                #[$crate::distributed_slice($crate::DYNDBG_PATCH_SITE_REGISTRY)]
-                static DYNDBG_PATCH_SITE_ENTRY: &'static $crate::DyndbgPatchSiteRegistration =
-                    &DYNDBG_PATCH_SITE;
+                #[$crate::distributed_slice($crate::DYNDBG_KEY_MAPPING)]
+                static DYNDBG_KEY_MAPPING_ENTRY: &'static $crate::DyndbgKeyMapping =
+                    &DYNDBG_KEY_MAPPING;
             }
         }
         #[cfg(all(not(feature = "dyndbg"), feature = "branchdbg"))]
@@ -1457,15 +1389,23 @@ macro_rules! dyndbg_debug_func {
                     fn __dyndbg_target() -> bool;
                 }
 
-                static DYNDBG_PATCH_SITE: $crate::DyndbgPatchSiteRegistration =
-                    $crate::DyndbgPatchSiteRegistration {
+                static STATIC_KEY_SITE: ostd::arch::static_key::StaticKeySite =
+                    ostd::arch::static_key::StaticKeySite::new(
+                        __dyndbg_site,
+                        __dyndbg_target,
+                    );
+                #[ostd::distributed_slice(ostd::arch::static_key::STATIC_KEY_SITE_REGISTRY)]
+                static STATIC_KEY_REG_ENTRY: &ostd::arch::static_key::StaticKeySite =
+                    &STATIC_KEY_SITE;
+
+                static DYNDBG_KEY_MAPPING: $crate::DyndbgKeyMapping =
+                    $crate::DyndbgKeyMapping {
                         descriptor: &DESCRIPTOR,
-                        instruction_site: __dyndbg_site,
-                        jump_target: __dyndbg_target,
+                        static_key_site: &STATIC_KEY_SITE,
                     };
-                #[$crate::distributed_slice($crate::DYNDBG_PATCH_SITE_REGISTRY)]
-                static DYNDBG_PATCH_SITE_ENTRY: &'static $crate::DyndbgPatchSiteRegistration =
-                    &DYNDBG_PATCH_SITE;
+                #[$crate::distributed_slice($crate::DYNDBG_KEY_MAPPING)]
+                static DYNDBG_KEY_MAPPING_ENTRY: &'static $crate::DyndbgKeyMapping =
+                    &DYNDBG_KEY_MAPPING;
             }
             #[cfg(not(target_arch = "x86_64"))]
             {
@@ -1507,6 +1447,6 @@ macro_rules! dyndbg_debug_func {
 
 pub(super) fn init() {
     pre_register_dyndbg_descriptors();
-    pre_register_dyndbg_patch_sites();
+    pre_register_dyndbg_keys();
     ostd::logger::inject_logger(&LOGGER);
 }

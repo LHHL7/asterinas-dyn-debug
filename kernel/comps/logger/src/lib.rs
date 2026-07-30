@@ -29,8 +29,8 @@ pub use aster_logger::{
     set_dyndbg_index_enabled, set_dyndbg_recompute_enabled,
     set_dyndbg_patch_backend, set_dyndbg_rule,
     update_dyndbg_rule,
-    DebugDescriptor, DYNDBG_DESCRIPTOR_REGISTRY, DYNDBG_PATCH_SITE_REGISTRY,
-    DyndbgPatchBackend, DyndbgPatchSiteRegistration, DyndbgStatsSnapshot,
+    DebugDescriptor, DYNDBG_DESCRIPTOR_REGISTRY, DYNDBG_KEY_MAPPING,
+    DyndbgKeyMapping, DyndbgPatchBackend, DyndbgStatsSnapshot,
     DyndbgRuleEntrySnapshot,
     DyndbgRuleSnapshot,
 };
