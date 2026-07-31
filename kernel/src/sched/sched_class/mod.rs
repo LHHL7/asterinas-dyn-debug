@@ -337,16 +337,20 @@ impl ClassScheduler {
 
 impl PerCpuClassRqSet {
     fn pick_next_entity(&mut self) -> Option<SchedEntity> {
-        sched_trace::trace_pick_next();
-
-        (self.stop.pick_next())
+        let next = (self.stop.pick_next())
             .or_else(|| self.real_time.pick_next())
             .or_else(|| self.fair.pick_next())
             .or_else(|| self.idle.pick_next())
             .and_then(|task| {
                 let thread = task.as_thread()?.clone();
                 Some((task, thread))
-            })
+            });
+
+        if let Some((ref task, _)) = next {
+            sched_trace::trace_pick_next(Arc::as_ptr(task) as usize);
+        }
+
+        next
     }
 
     fn enqueue_entity(&mut self, (task, thread): SchedEntity, flags: Option<EnqueueFlags>) {
