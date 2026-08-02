@@ -896,23 +896,6 @@ impl From<&DyndbgRuleEntry> for DyndbgRuleEntrySnapshot {
     }
 }
 
-// Backward-compatible API.
-pub fn update_dyndbg_rule(file_keyword: Option<&str>, module_keyword: Option<&str>) {
-    let snapshot = DyndbgRuleSnapshot {
-        file_keyword: file_keyword.map(String::from),
-        module_keyword: module_keyword.map(String::from),
-        function_keyword: None,
-        line: None,
-    };
-    set_dyndbg_rule(snapshot);
-}
-
-// Backward-compatible API.
-pub fn get_dyndbg_rule() -> (Option<String>, Option<String>) {
-    let snapshot = get_dyndbg_rule_snapshot();
-    (snapshot.file_keyword, snapshot.module_keyword)
-}
-
 // 获取规则链最后一条规则快照
 pub fn get_dyndbg_rule_snapshot() -> DyndbgRuleSnapshot {
     let state = DYNDBG_STATE.lock();
@@ -939,25 +922,6 @@ pub fn reset_dyndbg_stats() {
     DYNDBG_SITES_PATCHED.store(0, Ordering::Relaxed);
     DYNDBG_PATCH_TRANSACTIONS.store(0, Ordering::Relaxed);
     DYNDBG_LAST_UPDATE_LATENCY_US.store(0, Ordering::Relaxed);
-}
-
-// 清空规则链，新设置一条规则
-pub fn set_dyndbg_rule(snapshot: DyndbgRuleSnapshot) {
-    let mut state = DYNDBG_STATE.lock();
-    let old_rules = state.rules.clone();
-
-    state.rules.clear();
-    let new_entry = DyndbgRuleEntry {
-        rule: snapshot.into(),
-        action: DyndbgRuleAction::EnableLog,
-    };
-    state.rules.push(new_entry.clone());
-
-    let mut affected = state.collect_candidates_for_rule_entries(&old_rules);
-    affected.extend(state.collect_candidates_for_rule_entries(core::slice::from_ref(
-        &new_entry,
-    )));
-    state.refresh_registered_descriptors(affected);
 }
 
 //清空规则链
