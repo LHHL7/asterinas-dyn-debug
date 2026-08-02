@@ -20,9 +20,12 @@ use component::{init_component, ComponentInitError};
 
 mod aster_logger;
 mod console;
+#[allow(unsafe_code)]
+pub mod dyndbg_trace;
 //对外暴露接口 方便控制接口调用
 pub use aster_logger::{
-    append_dyndbg_rule, clear_dyndbg_rule, clear_dyndbg_rules, dyndbg_should_log,
+    append_dyndbg_rule, clear_dyndbg_rule, clear_dyndbg_rules, dyndbg_module_enabled,
+    dyndbg_should_log, dyndbg_should_trace,
     get_dyndbg_index_enabled, get_dyndbg_recompute_enabled, get_dyndbg_patch_backend,
     get_dyndbg_rule, get_dyndbg_rule_chain_snapshot, get_dyndbg_rule_snapshot,
     remove_dyndbg_rule_by_id, get_dyndbg_stats_snapshot, reset_dyndbg_stats,
@@ -31,6 +34,7 @@ pub use aster_logger::{
     update_dyndbg_rule,
     DebugDescriptor, DYNDBG_DESCRIPTOR_REGISTRY, DYNDBG_KEY_MAPPING,
     DyndbgKeyMapping, DyndbgPatchBackend, DyndbgStatsSnapshot,
+    DyndbgRuleActionSnapshot,
     DyndbgRuleEntrySnapshot,
     DyndbgRuleSnapshot,
 };

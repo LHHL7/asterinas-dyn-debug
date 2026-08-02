@@ -31,9 +31,15 @@ impl FileOps for DynamicDebugFileOps {
         // 打印规则链（last-match-wins）。
         writeln!(printer, "rules={} (last-match-wins)", rules.len())?;
         for (index, entry) in rules.iter().enumerate() {
+            let action_str = match entry.action {
+                aster_logger::DyndbgRuleActionSnapshot::EnableLog => "+p",
+                aster_logger::DyndbgRuleActionSnapshot::DisableLog => "-p",
+                aster_logger::DyndbgRuleActionSnapshot::EnableTrace => "+trace",
+                aster_logger::DyndbgRuleActionSnapshot::DisableTrace => "-trace",
+            };
             writeln!(
                 printer,
-                "{}: file={} module={} func={} line={} {}p",
+                "{}: file={} module={} func={} line={} {}",
                 index,
                 entry.rule.file_keyword.as_deref().unwrap_or("*"),
                 entry.rule.module_keyword.as_deref().unwrap_or("*"),
@@ -44,13 +50,13 @@ impl FileOps for DynamicDebugFileOps {
                     .map(|line| line.to_string())
                     .as_deref()
                     .unwrap_or("*"),
-                if entry.enabled { "+" } else { "-" },
+                action_str,
             )?;
         }
         //用法提示
         writeln!(
             printer,
-            "usage: [file=<kw>] [module=<kw>] [func=<kw>] [line=<n>] +p|-p | del <id> | clear"
+            "usage: [file=<kw>] [module=<kw>] [func=<kw>] [line=<n>] +p|-p|+trace|-trace | del <id> | clear"
         )?;
 
         Ok(printer.bytes_written())
@@ -96,9 +102,11 @@ fn apply_command(command: &str) -> Result<()> {
     let selectors = parts;
 
     match action {
-        "+p" => append_rule(&selectors, true),
-        "-p" => append_rule(&selectors, false),
-        _ => return_errno_with_message!(Errno::EINVAL, "action must be +p or -p"),
+        "+p" => append_rule(&selectors, aster_logger::DyndbgRuleActionSnapshot::EnableLog),
+        "-p" => append_rule(&selectors, aster_logger::DyndbgRuleActionSnapshot::DisableLog),
+        "+trace" => append_rule(&selectors, aster_logger::DyndbgRuleActionSnapshot::EnableTrace),
+        "-trace" => append_rule(&selectors, aster_logger::DyndbgRuleActionSnapshot::DisableTrace),
+        _ => return_errno_with_message!(Errno::EINVAL, "action must be +p, -p, +trace, or -trace"),
     }
 }
 
@@ -129,7 +137,10 @@ fn parse_selector(selector: &str) -> Result<(&str, &str)> {
     Ok((key, value))
 }
 
-fn append_rule(selectors: &[&str], enabled: bool) -> Result<()> {
+fn append_rule(
+    selectors: &[&str],
+    action: aster_logger::DyndbgRuleActionSnapshot,
+) -> Result<()> {
     let mut rule = aster_logger::DyndbgRuleSnapshot::default();
     for selector in selectors {
         let (key, value) = parse_selector(selector)?;
@@ -152,7 +163,7 @@ fn append_rule(selectors: &[&str], enabled: bool) -> Result<()> {
         }
     }
 
-    aster_logger::append_dyndbg_rule(rule, enabled);
+    aster_logger::append_dyndbg_rule(rule, action);
 
     Ok(())
 }

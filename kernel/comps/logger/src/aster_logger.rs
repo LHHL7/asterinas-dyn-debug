@@ -149,8 +149,10 @@ pub static DYNDBG_KEY_MAPPING: [&'static DyndbgKeyMapping];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DyndbgRuleAction {
-    Enable,
-    Disable,
+    EnableLog,
+    DisableLog,
+    EnableTrace,
+    DisableTrace,
 }
 
 
@@ -235,13 +237,13 @@ impl DyndbgState {
         descriptor.init_module_id(module_id);
         // 初始时空规则链 默认禁用所有descriptor，避免冗余判断和触发状态迁移逻辑。
         if self.rules.is_empty() {
-            descriptor.init_enabled(DEFAULT_DEBUG_ENABLED);
+            descriptor.init_enabled(DEFAULT_DEBUG_ENABLED, false);
             return;
         }
         //若初始有rule链 根据rule链来设置初始enabled状态和判断是否迁移
-        let is_enabled = self.matches_descriptor(descriptor);
-        descriptor.init_enabled(is_enabled);
-        if is_enabled {
+        let (log_enabled, trace_enabled) = self.matches_descriptor(descriptor);
+        descriptor.init_enabled(log_enabled, trace_enabled);
+        if log_enabled || trace_enabled {
             self.apply_enabled_transition(module_id, false, true);
         }
     }
@@ -276,10 +278,12 @@ impl DyndbgState {
                 continue;
             }
             DYNDBG_DESCRIPTORS_RECOMPUTED.fetch_add(1, Ordering::Relaxed);
-            //仅对受影响的descriptor进行裁决和更新enabled状态 避免全量更新的性能问题
-            let enabled = self.matches_descriptor(descriptor);
-            let old_enabled = descriptor.swap_enabled(enabled);
-            if old_enabled == enabled {
+            // 仅对受影响的 descriptor 进行独立双维度裁决
+            // Log 和 Trace 各自 last-match-wins，互不干扰。
+            let (log_enabled, trace_enabled) = self.matches_descriptor(descriptor);
+            let (old_effective, new_effective) =
+                descriptor.update_enabled(log_enabled, trace_enabled);
+            if old_effective == new_effective {
                 continue;
             }
 
@@ -288,8 +292,8 @@ impl DyndbgState {
                 continue;
             }
 
-            // 暂存descriptor变化
-            let delta = if enabled { 1 } else { -1 };
+            // 暂存descriptor变化（基于 effective 状态）
+            let delta = if new_effective { 1 } else { -1 };
             *module_deltas.entry(module_id).or_insert(0) += delta;
         }
 
@@ -473,15 +477,22 @@ impl DyndbgState {
         candidates.unwrap_or_else(all_descriptors)
     }
 
-    //最终的对单个描述符的裁决逻辑，所有rule过一遍，后面规则优先级高于前面规则
-    fn matches_descriptor(&self, descriptor: &DebugDescriptor) -> bool {
-        let mut enabled = DEFAULT_DEBUG_ENABLED;
+    // 最终的对单个描述符的裁决逻辑。
+    // Log 和 Trace 是独立的两个维度，各自 last-match-wins，互不干扰。
+    fn matches_descriptor(&self, descriptor: &DebugDescriptor) -> (bool, bool) {
+        let mut log_enabled = DEFAULT_DEBUG_ENABLED;
+        let mut trace_enabled = false;
         for entry in &self.rules {
             if entry.rule.matches_descriptor(descriptor) {
-                enabled = entry.action == DyndbgRuleAction::Enable;
+                match entry.action {
+                    DyndbgRuleAction::EnableLog => log_enabled = true,
+                    DyndbgRuleAction::DisableLog => log_enabled = false,
+                    DyndbgRuleAction::EnableTrace => trace_enabled = true,
+                    DyndbgRuleAction::DisableTrace => trace_enabled = false,
+                }
             }
         }
-        enabled
+        (log_enabled, trace_enabled)
     }
 
 }
@@ -625,7 +636,8 @@ fn module_enabled(module_id: u32) -> bool {
 
 #[derive(Debug)]
 pub struct DebugDescriptor {
-    enabled: AtomicBool,
+    log_enabled: AtomicBool,
+    trace_enabled: AtomicBool,
     file: &'static str,
     module_path: &'static str,
     module_id: AtomicU32,
@@ -641,7 +653,8 @@ impl DebugDescriptor {
         line: u32,
     ) -> Self {
         Self {
-            enabled: AtomicBool::new(DEFAULT_DEBUG_ENABLED),
+            log_enabled: AtomicBool::new(DEFAULT_DEBUG_ENABLED),
+            trace_enabled: AtomicBool::new(false),
             file,
             module_path,
             module_id: AtomicU32::new(UNASSIGNED_MODULE_ID),
@@ -650,8 +663,10 @@ impl DebugDescriptor {
         }
     }
 
-    fn init_enabled(&self, enabled: bool) {
-        self.enabled.store(enabled, Ordering::Relaxed);
+    /// Set initial state for both modes (used during registration).
+    fn init_enabled(&self, log_enabled: bool, trace_enabled: bool) {
+        self.log_enabled.store(log_enabled, Ordering::Relaxed);
+        self.trace_enabled.store(trace_enabled, Ordering::Relaxed);
     }
 
     fn init_module_id(&self, module_id: u32) {
@@ -662,13 +677,31 @@ impl DebugDescriptor {
         self.module_id.load(Ordering::Acquire)
     }
 
-    fn swap_enabled(&self, enabled: bool) -> bool {
-        self.enabled.swap(enabled, Ordering::AcqRel)
+    /// Atomically update both mode flags; returns the effective transition.
+    ///
+    /// Returns `(old_effective, new_effective)` where "effective" means
+    /// *any* mode is enabled.  A change in effective state triggers the
+    /// module-level counter update and potential instruction patching.
+    fn update_enabled(&self, log_enabled: bool, trace_enabled: bool) -> (bool, bool) {
+        let old_log = self.log_enabled.swap(log_enabled, Ordering::AcqRel);
+        let old_trace = self.trace_enabled.swap(trace_enabled, Ordering::AcqRel);
+        let old_effective = old_log || old_trace;
+        let new_effective = log_enabled || trace_enabled;
+        (old_effective, new_effective)
     }
 
+    /// True when this descriptor is in Log mode (used by the fast-path
+    /// `dyndbg_should_log` guard).
     #[inline]
-    fn should_log_fast(&self) -> bool {
-        self.enabled.load(Ordering::Acquire)
+    pub fn should_log_fast(&self) -> bool {
+        self.log_enabled.load(Ordering::Acquire)
+    }
+
+    /// True when this descriptor is in Trace mode (used by the fast-path
+    /// trace hook).
+    #[inline]
+    pub fn should_trace_fast(&self) -> bool {
+        self.trace_enabled.load(Ordering::Acquire)
     }
 
     #[inline]
@@ -678,13 +711,37 @@ impl DebugDescriptor {
 }
 
 pub fn dyndbg_should_log(descriptor: &'static DebugDescriptor) -> bool {
-    // 目前仅支持了x86的static patch实现 故此时在dyndbg(x86_64)路径下模块门控为冗余 
+    // 目前仅支持了x86的static patch实现 故此时在dyndbg(x86_64)路径下模块门控为冗余
     // 但非x86的路径下依然算是优化 故暂时保留
     if !module_enabled(descriptor.module_id()) {
         return false;
     }
 
     descriptor.should_log_fast()
+}
+
+/// Fast-path guard for trace mode: checks module gate + descriptor trace flag.
+///
+/// Called from the dyndbg macro label block; when both the module gate and the
+/// per-descriptor flag pass, the call site pushes a structured event into the
+/// trace ring buffer.
+#[inline]
+pub fn dyndbg_should_trace(descriptor: &'static DebugDescriptor) -> bool {
+    if !module_enabled(descriptor.module_id()) {
+        return false;
+    }
+
+    descriptor.should_trace_fast()
+}
+
+/// Single module-gate check for use in dyndbg macro label blocks.
+///
+/// In the x86_64 NOP5/JMP path this is always `true` (the JMP is only
+/// patched in when the module is enabled).  On non-x86 architectures it
+/// serves as a cheap early-exit before the per-descriptor mode checks.
+#[inline]
+pub fn dyndbg_module_enabled(descriptor: &DebugDescriptor) -> bool {
+    module_enabled(descriptor.module_id())
 }
 
 fn pre_register_dyndbg_descriptors() {
@@ -761,10 +818,23 @@ pub struct DyndbgRuleSnapshot {
     pub line: Option<u32>,
 }
 
+/// Public mirror of [`DyndbgRuleAction`] for the snapshot API.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DyndbgRuleActionSnapshot {
+    /// Enable log output (`+p`).
+    EnableLog,
+    /// Disable log output (`-p`).
+    DisableLog,
+    /// Enable structured tracing (`+trace`).
+    EnableTrace,
+    /// Disable structured tracing (`-trace`).
+    DisableTrace,
+}
+
 #[derive(Debug, Clone)]
 pub struct DyndbgRuleEntrySnapshot {
     pub rule: DyndbgRuleSnapshot,
-    pub enabled: bool,
+    pub action: DyndbgRuleActionSnapshot,
 }
 
 #[derive(Debug, Clone)]
@@ -802,10 +872,11 @@ impl From<DyndbgRuleEntrySnapshot> for DyndbgRuleEntry {
     fn from(snapshot: DyndbgRuleEntrySnapshot) -> Self {
         Self {
             rule: snapshot.rule.into(),
-            action: if snapshot.enabled {
-                DyndbgRuleAction::Enable
-            } else {
-                DyndbgRuleAction::Disable
+            action: match snapshot.action {
+                DyndbgRuleActionSnapshot::EnableLog => DyndbgRuleAction::EnableLog,
+                DyndbgRuleActionSnapshot::DisableLog => DyndbgRuleAction::DisableLog,
+                DyndbgRuleActionSnapshot::EnableTrace => DyndbgRuleAction::EnableTrace,
+                DyndbgRuleActionSnapshot::DisableTrace => DyndbgRuleAction::DisableTrace,
             },
         }
     }
@@ -815,7 +886,12 @@ impl From<&DyndbgRuleEntry> for DyndbgRuleEntrySnapshot {
     fn from(entry: &DyndbgRuleEntry) -> Self {
         Self {
             rule: DyndbgRuleSnapshot::from(&entry.rule),
-            enabled: entry.action == DyndbgRuleAction::Enable,
+            action: match entry.action {
+                DyndbgRuleAction::EnableLog => DyndbgRuleActionSnapshot::EnableLog,
+                DyndbgRuleAction::DisableLog => DyndbgRuleActionSnapshot::DisableLog,
+                DyndbgRuleAction::EnableTrace => DyndbgRuleActionSnapshot::EnableTrace,
+                DyndbgRuleAction::DisableTrace => DyndbgRuleActionSnapshot::DisableTrace,
+            },
         }
     }
 }
@@ -873,7 +949,7 @@ pub fn set_dyndbg_rule(snapshot: DyndbgRuleSnapshot) {
     state.rules.clear();
     let new_entry = DyndbgRuleEntry {
         rule: snapshot.into(),
-        action: DyndbgRuleAction::Enable,
+        action: DyndbgRuleAction::EnableLog,
     };
     state.rules.push(new_entry.clone());
 
@@ -890,11 +966,11 @@ pub fn clear_dyndbg_rule() {
 }
 
 // 向规则链追加规则
-pub fn append_dyndbg_rule(snapshot: DyndbgRuleSnapshot, enabled: bool) {
+pub fn append_dyndbg_rule(snapshot: DyndbgRuleSnapshot, action: DyndbgRuleActionSnapshot) {
     let mut state = DYNDBG_STATE.lock();
     let new_entry: DyndbgRuleEntry = DyndbgRuleEntrySnapshot {
         rule: snapshot,
-        enabled,
+        action,
     }
     .into();
     let affected = state.collect_candidates_for_rule_entries(core::slice::from_ref(&new_entry));
@@ -1011,8 +1087,15 @@ macro_rules! dyndbg_debug {
                                     options(nomem, nostack)
                                 );
                             }
-                            if $crate::dyndbg_should_log(&DESCRIPTOR) {
+                            // SAFETY: JMP is only patched in when the module is
+                            // enabled, so a module-gate check is redundant here.
+                            if DESCRIPTOR.should_log_fast() {
                                 log::debug!($($arg)+);
+                            }
+                            if DESCRIPTOR.should_trace_fast() {
+                                $crate::dyndbg_trace::push_trace_event(
+                                    &DESCRIPTOR as *const $crate::DebugDescriptor as u64
+                                );
                             }
                         },
                         options(nomem, nostack, preserves_flags)
@@ -1065,8 +1148,15 @@ macro_rules! dyndbg_debug {
             }
             #[cfg(not(target_arch = "x86_64"))]
             {
-                if $crate::dyndbg_should_log(&DESCRIPTOR) {
-                    log::debug!($($arg)+);
+                if $crate::dyndbg_module_enabled(&DESCRIPTOR) {
+                    if DESCRIPTOR.should_log_fast() {
+                        log::debug!($($arg)+);
+                    }
+                    if DESCRIPTOR.should_trace_fast() {
+                        $crate::dyndbg_trace::push_trace_event(
+                            &DESCRIPTOR as *const $crate::DebugDescriptor as u64
+                        );
+                    }
                 }
             }
         }
@@ -1089,8 +1179,15 @@ macro_rules! dyndbg_debug {
             );
             #[$crate::distributed_slice($crate::DYNDBG_DESCRIPTOR_REGISTRY)]
             static DYNDBG_DESCRIPTOR_ENTRY: &'static $crate::DebugDescriptor = &DESCRIPTOR;
-            if $crate::dyndbg_should_log(&DESCRIPTOR) {
-                log::debug!($($arg)+);
+            if $crate::dyndbg_module_enabled(&DESCRIPTOR) {
+                if DESCRIPTOR.should_log_fast() {
+                    log::debug!($($arg)+);
+                }
+                if DESCRIPTOR.should_trace_fast() {
+                    $crate::dyndbg_trace::push_trace_event(
+                        &DESCRIPTOR as *const $crate::DebugDescriptor as u64
+                    );
+                }
             }
         }
 
@@ -1197,8 +1294,15 @@ macro_rules! dyndbg_debug_site {
                                     options(nomem, nostack)
                                 );
                             }
-                            if $crate::dyndbg_should_log(&DESCRIPTOR) {
+                            // SAFETY: JMP is only patched in when the module is
+                            // enabled, so a module-gate check is redundant here.
+                            if DESCRIPTOR.should_log_fast() {
                                 log::debug!($($arg)+);
+                            }
+                            if DESCRIPTOR.should_trace_fast() {
+                                $crate::dyndbg_trace::push_trace_event(
+                                    &DESCRIPTOR as *const $crate::DebugDescriptor as u64
+                                );
                             }
                         },
                         options(nomem, nostack, preserves_flags)
@@ -1271,8 +1375,15 @@ macro_rules! dyndbg_debug_site {
             );
             #[$crate::distributed_slice($crate::DYNDBG_DESCRIPTOR_REGISTRY)]
             static DYNDBG_DESCRIPTOR_ENTRY: &'static $crate::DebugDescriptor = &DESCRIPTOR;
-            if $crate::dyndbg_should_log(&DESCRIPTOR) {
-                log::debug!($($arg)+);
+            if $crate::dyndbg_module_enabled(&DESCRIPTOR) {
+                if DESCRIPTOR.should_log_fast() {
+                    log::debug!($($arg)+);
+                }
+                if DESCRIPTOR.should_trace_fast() {
+                    $crate::dyndbg_trace::push_trace_event(
+                        &DESCRIPTOR as *const $crate::DebugDescriptor as u64
+                    );
+                }
             }
         }
         #[cfg(not(any(feature = "dyndbg", feature = "branchdbg")))]
@@ -1358,8 +1469,15 @@ macro_rules! dyndbg_debug_func {
                                     options(nomem, nostack)
                                 );
                             }
-                            if $crate::dyndbg_should_log(&DESCRIPTOR) {
+                            // SAFETY: JMP is only patched in when the module is
+                            // enabled, so a module-gate check is redundant here.
+                            if DESCRIPTOR.should_log_fast() {
                                 log::debug!($($arg)+);
+                            }
+                            if DESCRIPTOR.should_trace_fast() {
+                                $crate::dyndbg_trace::push_trace_event(
+                                    &DESCRIPTOR as *const $crate::DebugDescriptor as u64
+                                );
                             }
                         },
                         options(nomem, nostack, preserves_flags)
@@ -1412,8 +1530,15 @@ macro_rules! dyndbg_debug_func {
             }
             #[cfg(not(target_arch = "x86_64"))]
             {
-                if $crate::dyndbg_should_log(&DESCRIPTOR) {
-                    log::debug!($($arg)+);
+                if $crate::dyndbg_module_enabled(&DESCRIPTOR) {
+                    if DESCRIPTOR.should_log_fast() {
+                        log::debug!($($arg)+);
+                    }
+                    if DESCRIPTOR.should_trace_fast() {
+                        $crate::dyndbg_trace::push_trace_event(
+                            &DESCRIPTOR as *const $crate::DebugDescriptor as u64
+                        );
+                    }
                 }
             }
         }
@@ -1429,8 +1554,15 @@ macro_rules! dyndbg_debug_func {
             );
             #[$crate::distributed_slice($crate::DYNDBG_DESCRIPTOR_REGISTRY)]
             static DYNDBG_DESCRIPTOR_ENTRY: &'static $crate::DebugDescriptor = &DESCRIPTOR;
-            if $crate::dyndbg_should_log(&DESCRIPTOR) {
-                log::debug!($($arg)+);
+            if $crate::dyndbg_module_enabled(&DESCRIPTOR) {
+                if DESCRIPTOR.should_log_fast() {
+                    log::debug!($($arg)+);
+                }
+                if DESCRIPTOR.should_trace_fast() {
+                    $crate::dyndbg_trace::push_trace_event(
+                        &DESCRIPTOR as *const $crate::DebugDescriptor as u64
+                    );
+                }
             }
         }
 
