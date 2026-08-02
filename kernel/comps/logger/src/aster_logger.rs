@@ -638,11 +638,14 @@ fn module_enabled(module_id: u32) -> bool {
 pub struct DebugDescriptor {
     log_enabled: AtomicBool,
     trace_enabled: AtomicBool,
-    file: &'static str,
-    module_path: &'static str,
+    /// Source file path (e.g. `kernel/src/fs/ext2/dir.rs`).
+    pub file: &'static str,
+    /// Rust module path (e.g. `aster_kernel::fs::ext2::dir`).
+    pub module_path: &'static str,
     module_id: AtomicU32,
     function: Option<fn() -> &'static str>,
-    line: u32,
+    /// Source line number.
+    pub line: u32,
 }
 
 impl DebugDescriptor {
@@ -704,8 +707,9 @@ impl DebugDescriptor {
         self.trace_enabled.load(Ordering::Acquire)
     }
 
+    /// Return the function name (without module path), e.g. `ext2_read`.
     #[inline]
-    fn function_name(&self) -> Option<&'static str> {
+    pub fn function_name(&self) -> Option<&'static str> {
         self.function.map(|provider| provider())
     }
 }

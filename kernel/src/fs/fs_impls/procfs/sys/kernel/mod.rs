@@ -11,6 +11,7 @@ use crate::{
             sys::kernel::{
                 cap_last_cap::CapLastCapFileOps, dynamic_debug::DynamicDebugFileOps,
                 dyndbg_bench::DyndbgBenchFileOps, dyndbg_stats::DyndbgStatsFileOps,
+                dyndbg_trace::DyndbgTraceFileOps,
                 pid_max::PidMaxFileOps, tsc::TscFileOps, yama::YamaDirOps,
             },
             template::{
@@ -26,6 +27,7 @@ mod cap_last_cap;
 mod dynamic_debug;
 mod dyndbg_bench;
 mod dyndbg_stats;
+mod dyndbg_trace;
 mod pid_max;
 mod tsc;
 mod yama;
@@ -49,6 +51,7 @@ impl KernelDirOps {
         ("dynamic_debug", DynamicDebugFileOps::new_inode),
         ("dyndbg_bench", DyndbgBenchFileOps::new_inode),
         ("dyndbg_stats", DyndbgStatsFileOps::new_inode),
+        ("dyndbg_trace", DyndbgTraceFileOps::new_inode),
         ("pid_max", PidMaxFileOps::new_inode),
         ("tsc", TscFileOps::new_inode),
         ("yama", YamaDirOps::new_inode),

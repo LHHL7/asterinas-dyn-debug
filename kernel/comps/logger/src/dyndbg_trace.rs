@@ -129,3 +129,9 @@ pub fn event_count() -> u64 {
 pub fn reset_event_count() {
     TRACE_EVENT_COUNT.store(0, Ordering::Relaxed);
 }
+
+/// Reset both the ring buffer and event counter.
+pub fn reset() {
+    TRACE_RING.head.store(0, Ordering::Relaxed);
+    TRACE_EVENT_COUNT.store(0, Ordering::Relaxed);
+}
