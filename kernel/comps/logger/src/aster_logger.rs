@@ -794,9 +794,11 @@ pub fn dyndbg_should_trace(descriptor: &'static DebugDescriptor) -> bool {
 
 /// Render the log message with the format prefixes enabled by `+f/+l/+m/+t`.
 ///
-/// Prefix order follows the flag order: `module function file:line [task]`.
-/// Only called on the enabled (JMP) path — the disabled NOP5 path never
-/// reaches here, so the extra formatting cost is confined to enabled logging.
+/// Prefix order is unified with the descriptor status listing
+/// (`cat /proc/sys/kernel/dynamic_debug`): `file:line [module] function
+/// [task=0x...]`.  Only called on the enabled (JMP) path — the disabled NOP5
+/// path never reaches here, so the extra formatting cost is confined to
+/// enabled logging.
 ///
 /// `task_ptr` is the address of the current `ostd::Task` (a stable per-thread
 /// identifier, same convention as the scheduler trace events); it is computed
@@ -810,18 +812,19 @@ pub fn format_dyndbg_log(
     let mut buf = String::new();
     let flags = descriptor.format_flags();
 
-    if flags & FLAG_MODULE != 0 {
-        buf.push_str(descriptor.module_path);
-        buf.push(' ');
-    }
-    if flags & FLAG_FUNCTION != 0 {
-        buf.push_str(descriptor.function_name().unwrap_or("<unknown>"));
-        buf.push(' ');
-    }
     if flags & FLAG_LINE != 0 {
         buf.push_str(descriptor.file);
         buf.push(':');
         buf.push_str(&alloc::string::ToString::to_string(&descriptor.line));
+        buf.push(' ');
+    }
+    if flags & FLAG_MODULE != 0 {
+        buf.push('[');
+        buf.push_str(descriptor.module_path);
+        buf.push_str("] ");
+    }
+    if flags & FLAG_FUNCTION != 0 {
+        buf.push_str(descriptor.function_name().unwrap_or("<unknown>"));
         buf.push(' ');
     }
     if flags & FLAG_THREAD != 0 {

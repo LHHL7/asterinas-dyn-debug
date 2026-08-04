@@ -72,12 +72,19 @@ impl FileOps for DyndbgTraceFileOps {
     }
 }
 
-/// Map a descriptor address back to `file:line (function)` for display.
+/// Map a descriptor address back to `file:line [module] function` for display
+/// (same order/format as the `cat dynamic_debug` status listing).
 fn resolve_descriptor(descriptor_id: u64) -> alloc::string::String {
     for desc in aster_logger::DYNDBG_DESCRIPTOR_REGISTRY {
         if (desc as *const _ as *const () as u64) == descriptor_id {
             let func = desc.function_name().unwrap_or("<unknown>");
-            return alloc::format!("{}:{} ({})", desc.file, desc.line, func);
+            return alloc::format!(
+                "{}:{} [{}] {}",
+                desc.file,
+                desc.line,
+                desc.module_path,
+                func
+            );
         }
     }
     alloc::format!("id=0x{:x} (unknown)", descriptor_id)
