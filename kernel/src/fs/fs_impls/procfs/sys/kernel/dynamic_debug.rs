@@ -60,6 +60,33 @@ impl FileOps for DynamicDebugFileOps {
                 flags_str,
             )?;
         }
+        // 调试点状态列表（Linux debugfs 读取侧的对标）。
+        let descriptors = aster_logger::DYNDBG_DESCRIPTOR_REGISTRY;
+        writeln!(printer, "descriptors={}", descriptors.len())?;
+        for descriptor in descriptors {
+            let log_str = if descriptor.should_log_fast() {
+                "+p"
+            } else {
+                "-p"
+            };
+            let trace_str = if descriptor.should_trace_fast() {
+                "+trace"
+            } else {
+                "-trace"
+            };
+            let flags_str = format_active_flags(descriptor.format_flags());
+            writeln!(
+                printer,
+                "{}:{} [{}] {} {} {} {}",
+                descriptor.file,
+                descriptor.line,
+                descriptor.module_path,
+                descriptor.function_name().unwrap_or("<unknown>"),
+                log_str,
+                trace_str,
+                flags_str,
+            )?;
+        }
         //用法提示
         writeln!(
             printer,
@@ -311,6 +338,30 @@ fn format_flags(set: u8, clear: u8, override_flags: Option<u8>) -> alloc::string
         }
     }
     if s.is_empty() {
+        s.push('-');
+    }
+    s
+}
+
+/// Render the *currently effective* format flags of a descriptor as a
+/// `+fl` / `-` string (used by the descriptor status listing).
+fn format_active_flags(flags: u8) -> alloc::string::String {
+    use aster_logger::{FLAG_FUNCTION, FLAG_LINE, FLAG_MODULE, FLAG_THREAD};
+
+    let mut s = alloc::string::String::new();
+    if flags != 0 {
+        s.push('+');
+        for (bit, ch) in [
+            (FLAG_FUNCTION, 'f'),
+            (FLAG_LINE, 'l'),
+            (FLAG_MODULE, 'm'),
+            (FLAG_THREAD, 't'),
+        ] {
+            if flags & bit != 0 {
+                s.push(ch);
+            }
+        }
+    } else {
         s.push('-');
     }
     s
