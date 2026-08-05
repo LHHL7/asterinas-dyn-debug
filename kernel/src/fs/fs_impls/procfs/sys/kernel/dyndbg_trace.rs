@@ -28,10 +28,21 @@ impl DyndbgTraceFileOps {
 impl FileOps for DyndbgTraceFileOps {
     fn read_at(&self, offset: usize, writer: &mut VmWriter) -> Result<usize> {
         let mut printer = VmPrinter::new_skip(writer, offset);
-        let events = aster_logger::dyndbg_trace::snapshot_events();
+        let (events, lost_this_read) = aster_logger::dyndbg_trace::snapshot_events();
         let count = aster_logger::dyndbg_trace::event_count();
+        let lost = aster_logger::dyndbg_trace::lost_count();
 
-        writeln!(printer, "events={} (total recorded since boot/last reset)", count)?;
+        writeln!(
+            printer,
+            "events={} lost={} (cumulative since boot or last reset)",
+            count, lost
+        )?;
+        writeln!(
+            printer,
+            "snapshot: {} events, {} lost (this read)",
+            events.len(),
+            lost_this_read
+        )?;
 
         if events.is_empty() {
             writeln!(printer, "(no events)")?;

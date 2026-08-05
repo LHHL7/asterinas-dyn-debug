@@ -4,8 +4,8 @@
 //!
 //! Demonstrates the StaticKey primitive (independent of dyndbg): when disabled,
 //! the trace call site is a single NOP5 instruction; when enabled at runtime,
-//! the NOP5 is patched to a JMP that enters a lock-free ring buffer recording
-//! context-switch events.
+//! the NOP5 is patched to a JMP that enters a lock-free per-CPU ring buffer
+//! recording context-switch events.
 //!
 //! # Usage
 //!
@@ -14,7 +14,8 @@
 //!
 //! sched_trace::enable();
 //! // ... run workload ...
-//! for event in sched_trace::snapshot_events() {
+//! let (events, _lost) = sched_trace::snapshot_events();
+//! for event in events {
 //!     log::info!("cpu={} ts={} task=0x{:x}", event.cpu, event.tsc, event.task_ptr);
 //! }
 //! sched_trace::disable();
@@ -23,8 +24,10 @@
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use ostd::arch::static_key::{self, StaticKeySite};
+use ostd::cpu::CpuId;
+use ostd::cpu_local;
 
-/// Maximum number of buffered events (power of 2 for mask-based wrap).
+/// Maximum number of buffered events per CPU (power of 2 for mask-based wrap).
 const RING_CAPACITY: usize = 256;
 const RING_MASK: usize = RING_CAPACITY - 1;
 
@@ -43,6 +46,9 @@ struct RingBuffer {
     events: [SchedTraceEvent; RING_CAPACITY],
     /// Monotonically-increasing write index (modulo RING_CAPACITY).
     head: AtomicUsize,
+    /// Snapshot watermark: events with index < `snapshot_head` have already
+    /// been consumed by the previous snapshot.
+    snapshot_head: AtomicUsize,
 }
 
 impl RingBuffer {
@@ -55,50 +61,73 @@ impl RingBuffer {
         Self {
             events: [EMPTY; RING_CAPACITY],
             head: AtomicUsize::new(0),
+            snapshot_head: AtomicUsize::new(0),
         }
     }
 
     fn push(&self, event: SchedTraceEvent) {
         let idx = self.head.fetch_add(1, Ordering::Relaxed) & RING_MASK;
         #[allow(unsafe_code)]
-        // SAFETY: idx < RING_CAPACITY due to mask; fetch_add gives each
-        // producer a unique slot so no write-write races.
+        // SAFETY: idx < RING_CAPACITY due to mask; this CPU is the only
+        // producer of its own ring (accessed via `get_with`), so no
+        // write-write races.
         unsafe {
             let ptr = self.events.as_ptr().add(idx) as *mut SchedTraceEvent;
             core::ptr::write_volatile(ptr, event);
         }
     }
 
-    fn drain(&self) -> alloc::vec::Vec<SchedTraceEvent> {
+    /// Drain events produced since the previous snapshot into `out`.
+    ///
+    /// Returns the number of events lost to ring overwrite since the previous
+    /// snapshot.
+    fn drain_since(&self, out: &mut alloc::vec::Vec<SchedTraceEvent>) -> usize {
         let head = self.head.load(Ordering::Relaxed);
-        let start = if head > RING_CAPACITY {
-            head - RING_CAPACITY
-        } else {
-            0
-        };
-        (start..head)
-            .map(|i| {
-                let idx = i & RING_MASK;
-                #[allow(unsafe_code)]
-                // SAFETY: idx < RING_CAPACITY due to mask.
-                unsafe {
-                    let ptr = self.events.as_ptr().add(idx);
-                    core::ptr::read_volatile(ptr)
-                }
-            })
-            .collect()
+        let watermark = self.snapshot_head.load(Ordering::Relaxed);
+        let produced = head.saturating_sub(watermark);
+        let available = produced.min(RING_CAPACITY);
+        let lost = produced - available;
+
+        for i in 0..available {
+            let idx = (watermark + i) & RING_MASK;
+            #[allow(unsafe_code)]
+            // SAFETY: idx < RING_CAPACITY due to mask; the slot was written by
+            // `write_volatile` and is read before any possible overwrite of
+            // this slot.
+            unsafe {
+                let ptr = self.events.as_ptr().add(idx);
+                out.push(core::ptr::read_volatile(ptr));
+            }
+        }
+        self.snapshot_head.store(head, Ordering::Relaxed);
+
+        lost
+    }
+
+    fn reset(&self) {
+        self.head.store(0, Ordering::Relaxed);
+        self.snapshot_head.store(0, Ordering::Relaxed);
     }
 }
 
-/// Global ring buffer shared across all CPUs.
-static RING: RingBuffer = RingBuffer::new();
+cpu_local! {
+    static RING: RingBuffer = RingBuffer::new();
+}
 
 /// Cumulative count for quick inspection without draining.
 static EVENT_COUNT: AtomicU64 = AtomicU64::new(0);
 
+/// Events lost to ring overwrite since boot (or last reset).
+static LOST_EVENTS: AtomicU64 = AtomicU64::new(0);
+
 /// Number of events recorded since boot (or last reset).
 pub fn event_count() -> u64 {
     EVENT_COUNT.load(Ordering::Relaxed)
+}
+
+/// Number of events lost to ring overwrite since boot (or last reset).
+pub fn lost_count() -> u64 {
+    LOST_EVENTS.load(Ordering::Relaxed)
 }
 
 /// Reset the event counter.
@@ -106,9 +135,25 @@ pub fn reset_event_count() {
     EVENT_COUNT.store(0, Ordering::Relaxed);
 }
 
-/// Drain all buffered events (oldest first).
-pub fn snapshot_events() -> alloc::vec::Vec<SchedTraceEvent> {
-    RING.drain()
+/// Drain all events produced since the previous drain, merged across all CPUs
+/// and sorted by TSC (global time order).
+///
+/// Consuming is destructive: each event is returned exactly once across
+/// successive calls.  Returns `(events, lost_this_read)`; the second element
+/// is also accumulated into the global [`lost_count`].
+pub fn snapshot_events() -> (alloc::vec::Vec<SchedTraceEvent>, u64) {
+    let mut events = alloc::vec::Vec::new();
+    let mut lost_this_read = 0u64;
+    for raw_cpu in 0..ostd::cpu::num_cpus() {
+        let ring = RING.get_on_cpu(CpuId::new(raw_cpu as u32));
+        let lost = ring.drain_since(&mut events);
+        if lost > 0 {
+            lost_this_read += lost as u64;
+            LOST_EVENTS.fetch_add(lost as u64, Ordering::Relaxed);
+        }
+    }
+    events.sort_by_key(|e| e.tsc);
+    (events, lost_this_read)
 }
 
 // ── Site management ────────────────────────────────────────────────────
@@ -142,16 +187,17 @@ pub fn site() -> Option<&'static StaticKeySite> {
 /// **Cost when disabled:** single NOP5 instruction — statistically
 /// indistinguishable from no instrumentation.
 ///
-/// **Cost when enabled:** one TSC read + lock-free ring-buffer push.
+/// **Cost when enabled:** one TSC read + lock-free per-CPU ring-buffer push.
 #[inline(always)]
 pub fn trace_pick_next(task_ptr: usize) {
     ostd::static_key_branch!(SCHED_TRACE => {
         let event = SchedTraceEvent {
-            cpu: u32::from(ostd::cpu::CpuId::current_racy()),
+            cpu: u32::from(CpuId::current_racy()),
             tsc: ostd::arch::read_tsc(),
             task_ptr,
         };
-        RING.push(event);
+        let irq_guard = ostd::irq::disable_local();
+        RING.get_with(&irq_guard).push(event);
         EVENT_COUNT.fetch_add(1, Ordering::Relaxed);
     });
 }
