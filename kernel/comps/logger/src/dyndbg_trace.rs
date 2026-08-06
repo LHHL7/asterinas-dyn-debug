@@ -34,6 +34,9 @@ use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use ostd::cpu::{local::CpuLocal, CpuId};
 use ostd::cpu_local;
 
+use crate::aster_logger::MAX_HOT_SITES;
+use crate::DebugDescriptor;
+
 /// Maximum number of buffered events per CPU (power of 2 for mask-based wrap).
 const RING_CAPACITY: usize = 1024;
 const RING_MASK: usize = RING_CAPACITY - 1;
@@ -130,6 +133,11 @@ impl RingBuffer {
 /// access via [`CpuLocal::get_on_cpu`] is allowed for snapshotting.
 cpu_local! {
     static TRACE_RING: RingBuffer = RingBuffer::new();
+    /// Per-CPU hotspot counters, indexed by [`DebugDescriptor::hot_index`]
+    /// (assigned at boot in registry order).  Only incremented on the trace
+    /// enabled path; the disabled NOP5 path never touches these.
+    static HOT_COUNTERS: [AtomicU64; MAX_HOT_SITES] =
+        [const { AtomicU64::new(0) }; MAX_HOT_SITES];
 }
 
 /// Cumulative count for quick inspection without snapshotting.
@@ -138,24 +146,64 @@ static TRACE_EVENT_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Events lost to ring overwrite since boot (or last reset).
 static TRACE_LOST_EVENTS: AtomicU64 = AtomicU64::new(0);
 
-/// Push a trace event into the current CPU's ring buffer (called from the
-/// dyndbg macro hot path when the descriptor is in Trace mode).
+/// Push a trace event into the current CPU's ring buffer and bump the
+/// descriptor's per-CPU hotspot counter (called from the dyndbg macro hot
+/// path when the descriptor is in Trace mode).
 ///
 /// # Lock-freedom
 ///
 /// Uses `fetch_add` for slot allocation + `write_volatile` for the store.
-/// No locks, no CAS loops, no cross-CPU contention — each CPU owns its ring.
-/// IRQs are temporarily disabled only to obtain the CPU-local reference.
+/// No locks, no CAS loops, no cross-CPU contention — each CPU owns its ring
+/// and its counter slice.  IRQs are temporarily disabled only to obtain the
+/// CPU-local reference.
 #[inline(always)]
-pub fn push_trace_event(descriptor_id: u64) {
+pub fn push_trace_event(descriptor: &DebugDescriptor) {
     let event = TraceEvent {
-        descriptor_id,
+        descriptor_id: descriptor as *const DebugDescriptor as u64,
         tsc: ostd::arch::read_tsc(),
         cpu: u32::from(CpuId::current_racy()),
     };
     let irq_guard = ostd::irq::disable_local();
     TRACE_RING.get_with(&irq_guard).push(event);
+    let hot_idx = descriptor.hot_index();
+    if hot_idx != u32::MAX {
+        HOT_COUNTERS.get_with(&irq_guard)[hot_idx as usize].fetch_add(1, Ordering::Relaxed);
+    }
     TRACE_EVENT_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Return the `n` hottest sites as `(registry_index, count)` pairs sorted by
+/// count descending (counts summed across all CPUs).
+///
+/// Only sites with a non-zero count are returned.  `registry_index` matches
+/// the subscript of [`crate::DYNDBG_DESCRIPTOR_REGISTRY`], so callers can
+/// resolve the descriptor directly.
+pub fn hot_top(n: usize) -> alloc::vec::Vec<(usize, u64)> {
+    let mut counts = alloc::vec::Vec::new();
+    for idx in 0..MAX_HOT_SITES {
+        let mut total = 0u64;
+        for raw_cpu in 0..ostd::cpu::num_cpus() {
+            total += HOT_COUNTERS
+                .get_on_cpu(CpuId::new(raw_cpu as u32))[idx]
+                .load(Ordering::Relaxed);
+        }
+        if total > 0 {
+            counts.push((idx, total));
+        }
+    }
+    counts.sort_by(|a, b| b.1.cmp(&a.1));
+    counts.truncate(n);
+    counts
+}
+
+/// Reset all per-CPU hotspot counters.
+pub fn reset_hot() {
+    for raw_cpu in 0..ostd::cpu::num_cpus() {
+        let counters = HOT_COUNTERS.get_on_cpu(CpuId::new(raw_cpu as u32));
+        for counter in counters {
+            counter.store(0, Ordering::Relaxed);
+        }
+    }
 }
 
 /// Return a snapshot of all events produced since the previous snapshot,

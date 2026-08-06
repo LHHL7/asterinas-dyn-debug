@@ -29,6 +29,10 @@ const DEFAULT_DEBUG_ENABLED: bool = false;
 const MAX_DYNDBG_MODULES: usize = 8192;
 // 安全设计 当模块id分配用尽时，后续descriptor将被分配到UNASSIGNED_MODULE_ID上，默认禁用。
 const UNASSIGNED_MODULE_ID: u32 = u32::MAX;
+/// 热点计数器数组容量（与 per-CPU ring 同属 trace 基础设施）。
+/// 安全设计 当descriptor数量超过上限时，超出部分不参与热点统计。
+pub const MAX_HOT_SITES: usize = 4096;
+const UNASSIGNED_HOT_INDEX: u32 = u32::MAX;
 
 // Fast gates used on the hot path. Updates happen under DYNDBG_STATE lock, while
 // reads are lock-free in dyndbg_should_log().
@@ -220,6 +224,8 @@ struct DyndbgState {
     module_index: BTreeMap<&'static str, Vec<&'static DebugDescriptor>>,
     function_index: BTreeMap<&'static str, Vec<&'static DebugDescriptor>>,
     line_index: BTreeMap<u32, Vec<&'static DebugDescriptor>>,
+    /// Next hotspot counter index to assign (registry order).
+    hot_site_count: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -238,6 +244,7 @@ impl DyndbgState {
             module_index: BTreeMap::new(),
             function_index: BTreeMap::new(),
             line_index: BTreeMap::new(),
+            hot_site_count: 0,
         }
     }
 
@@ -252,6 +259,13 @@ impl DyndbgState {
 
         let module_id = self.allocate_module_id(descriptor.module_path);
         descriptor.init_module_id(module_id);
+
+        // 热点计数器按注册顺序分配索引（索引 == DYNDBG_DESCRIPTOR_REGISTRY 下标，
+        // 查询时可直接反查描述符）。
+        if self.hot_site_count < MAX_HOT_SITES {
+            descriptor.init_hot_index(self.hot_site_count as u32);
+            self.hot_site_count += 1;
+        }
         // 初始时空规则链 默认禁用所有descriptor，避免冗余判断和触发状态迁移逻辑。
         if self.rules.is_empty() {
             descriptor.init_enabled(DEFAULT_DEBUG_ENABLED, false);
@@ -671,6 +685,9 @@ pub struct DebugDescriptor {
     /// Format flags for log output prefixes (`+f/+l/+m/+t`), see
     /// [`FLAG_FUNCTION`] etc.  Read only on the enabled path.
     format_flags: AtomicU8,
+    /// Index into the per-CPU hotspot counter array (assigned at boot in
+    /// registry order).  `UNASSIGNED_HOT_INDEX` means "not counted".
+    hot_index: AtomicU32,
     /// Source file path (e.g. `kernel/src/fs/ext2/dir.rs`).
     pub file: &'static str,
     /// Rust module path (e.g. `aster_kernel::fs::ext2::dir`).
@@ -692,6 +709,7 @@ impl DebugDescriptor {
             log_enabled: AtomicBool::new(DEFAULT_DEBUG_ENABLED),
             trace_enabled: AtomicBool::new(false),
             format_flags: AtomicU8::new(0),
+            hot_index: AtomicU32::new(UNASSIGNED_HOT_INDEX),
             file,
             module_path,
             module_id: AtomicU32::new(UNASSIGNED_MODULE_ID),
@@ -712,6 +730,17 @@ impl DebugDescriptor {
 
     fn module_id(&self) -> u32 {
         self.module_id.load(Ordering::Acquire)
+    }
+
+    /// Assign the hotspot counter index (boot-time, registry order).
+    fn init_hot_index(&self, hot_index: u32) {
+        self.hot_index.store(hot_index, Ordering::Relaxed);
+    }
+
+    /// Hotspot counter index, or `UNASSIGNED_HOT_INDEX` when not counted.
+    #[inline]
+    pub fn hot_index(&self) -> u32 {
+        self.hot_index.load(Ordering::Relaxed)
     }
 
     /// Atomically update both mode flags; returns the effective transition.
@@ -1206,9 +1235,7 @@ macro_rules! dyndbg_debug {
                                 $crate::__dyndbg_emit_log!(DESCRIPTOR, $($arg)+);
                             }
                             if DESCRIPTOR.should_trace_fast() {
-                                $crate::dyndbg_trace::push_trace_event(
-                                    &DESCRIPTOR as *const $crate::DebugDescriptor as u64
-                                );
+                                $crate::dyndbg_trace::push_trace_event(&DESCRIPTOR);
                             }
                         },
                         options(nomem, nostack, preserves_flags)
@@ -1266,9 +1293,7 @@ macro_rules! dyndbg_debug {
                         $crate::__dyndbg_emit_log!(DESCRIPTOR, $($arg)+);
                     }
                     if DESCRIPTOR.should_trace_fast() {
-                        $crate::dyndbg_trace::push_trace_event(
-                            &DESCRIPTOR as *const $crate::DebugDescriptor as u64
-                        );
+                        $crate::dyndbg_trace::push_trace_event(&DESCRIPTOR);
                     }
                 }
             }
@@ -1297,9 +1322,7 @@ macro_rules! dyndbg_debug {
                     $crate::__dyndbg_emit_log!(DESCRIPTOR, $($arg)+);
                 }
                 if DESCRIPTOR.should_trace_fast() {
-                    $crate::dyndbg_trace::push_trace_event(
-                        &DESCRIPTOR as *const $crate::DebugDescriptor as u64
-                    );
+                    $crate::dyndbg_trace::push_trace_event(&DESCRIPTOR);
                 }
             }
         }
@@ -1413,9 +1436,7 @@ macro_rules! dyndbg_debug_site {
                                 $crate::__dyndbg_emit_log!(DESCRIPTOR, $($arg)+);
                             }
                             if DESCRIPTOR.should_trace_fast() {
-                                $crate::dyndbg_trace::push_trace_event(
-                                    &DESCRIPTOR as *const $crate::DebugDescriptor as u64
-                                );
+                                $crate::dyndbg_trace::push_trace_event(&DESCRIPTOR);
                             }
                         },
                         options(nomem, nostack, preserves_flags)
@@ -1493,9 +1514,7 @@ macro_rules! dyndbg_debug_site {
                     $crate::__dyndbg_emit_log!(DESCRIPTOR, $($arg)+);
                 }
                 if DESCRIPTOR.should_trace_fast() {
-                    $crate::dyndbg_trace::push_trace_event(
-                        &DESCRIPTOR as *const $crate::DebugDescriptor as u64
-                    );
+                    $crate::dyndbg_trace::push_trace_event(&DESCRIPTOR);
                 }
             }
         }
@@ -1588,9 +1607,7 @@ macro_rules! dyndbg_debug_func {
                                 $crate::__dyndbg_emit_log!(DESCRIPTOR, $($arg)+);
                             }
                             if DESCRIPTOR.should_trace_fast() {
-                                $crate::dyndbg_trace::push_trace_event(
-                                    &DESCRIPTOR as *const $crate::DebugDescriptor as u64
-                                );
+                                $crate::dyndbg_trace::push_trace_event(&DESCRIPTOR);
                             }
                         },
                         options(nomem, nostack, preserves_flags)
@@ -1648,9 +1665,7 @@ macro_rules! dyndbg_debug_func {
                         $crate::__dyndbg_emit_log!(DESCRIPTOR, $($arg)+);
                     }
                     if DESCRIPTOR.should_trace_fast() {
-                        $crate::dyndbg_trace::push_trace_event(
-                            &DESCRIPTOR as *const $crate::DebugDescriptor as u64
-                        );
+                        $crate::dyndbg_trace::push_trace_event(&DESCRIPTOR);
                     }
                 }
             }
@@ -1672,9 +1687,7 @@ macro_rules! dyndbg_debug_func {
                     $crate::__dyndbg_emit_log!(DESCRIPTOR, $($arg)+);
                 }
                 if DESCRIPTOR.should_trace_fast() {
-                    $crate::dyndbg_trace::push_trace_event(
-                        &DESCRIPTOR as *const $crate::DebugDescriptor as u64
-                    );
+                    $crate::dyndbg_trace::push_trace_event(&DESCRIPTOR);
                 }
             }
         }
