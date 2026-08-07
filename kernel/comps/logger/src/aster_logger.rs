@@ -390,14 +390,17 @@ impl DyndbgState {
     }
 
     // 设置新规则时仅重算受影响的descriptor，降低规则更新成本。
+    /// 重放式刷新（remove/clear 专用）：对受影响描述符重放完整规则链，
+    /// 计算最终状态。链变更可能改变"最后命中者"，无法增量维护，必须重放。
     fn refresh_registered_descriptors(&mut self, affected: Vec<&'static DebugDescriptor>) {
         let tsc_start = ostd::arch::read_tsc();
 
         let mut seen = BTreeSet::new();
         let mut module_deltas = BTreeMap::<u32, i64>::new();
 
-        //去重
+        
         for descriptor in affected {
+            //去重
             if !seen.insert(descriptor_id(descriptor)) {
                 continue;
             }
@@ -424,6 +427,77 @@ impl DyndbgState {
         }
 
         // 应用模块级的变化，触发必要的指令修补。
+        for (module_id, delta) in module_deltas {
+            self.apply_module_delta(module_id, delta);
+        }
+
+        let tsc_end = ostd::arch::read_tsc();
+        let tsc_freq = ostd::arch::tsc_freq();
+        if tsc_freq > 0 && tsc_end > tsc_start {
+            let elapsed_us = ((tsc_end - tsc_start) * 1_000_000) / tsc_freq;
+            DYNDBG_LAST_UPDATE_LATENCY_US.store(elapsed_us, Ordering::Relaxed);
+        }
+    }
+
+    /// 增量式刷新（append 专用）：新规则追加在规则链末尾，链尾必胜
+    /// （last-match-wins），因此只需把新规则的动作/flags 增量应用到其
+    /// 命中集上——动作只改对应维度，其余维度保持描述符当前持久状态；
+    /// flags 按顺序模拟的尾部操作（set → clear → override）计算。
+    ///
+    /// 与重放整条链的结果等价（描述符持久状态 = 旧链重放结果，追加新规则
+    /// 后目标值 = 旧值增量变换），但免去 O(链长) 的重复匹配。
+    #[allow(clippy::too_many_arguments)]
+    fn refresh_registered_descriptors_incremental(
+        &mut self,
+        affected: Vec<&'static DebugDescriptor>,
+        action: DyndbgRuleAction,
+        flags_set: u8,
+        flags_clear: u8,
+        flags_override: Option<u8>,
+    ) {
+        let tsc_start = ostd::arch::read_tsc();
+
+        let mut seen = BTreeSet::new();
+        let mut module_deltas = BTreeMap::<u32, i64>::new();
+
+        for descriptor in affected {
+            if !seen.insert(descriptor_id(descriptor)) {
+                continue;
+            }
+            DYNDBG_DESCRIPTORS_RECOMPUTED.fetch_add(1, Ordering::Relaxed);
+
+            // 增量应用：动作只改其对应维度，其余维度保持当前持久状态。
+            let cur_log = descriptor.should_log_fast();
+            let cur_trace = descriptor.should_trace_fast();
+            let (log_enabled, trace_enabled) = match action {
+                DyndbgRuleAction::EnableLog => (true, cur_trace),
+                DyndbgRuleAction::DisableLog => (false, cur_trace),
+                DyndbgRuleAction::EnableTrace => (cur_log, true),
+                DyndbgRuleAction::DisableTrace => (cur_log, false),
+                DyndbgRuleAction::KeepState => (cur_log, cur_trace),
+            };
+            // flags 增量：顺序模拟的尾部操作（set → clear → override）。
+            let new_flags = if let Some(v) = flags_override {
+                v
+            } else {
+                (descriptor.format_flags() | flags_set) & !flags_clear
+            };
+            descriptor.set_format_flags(new_flags);
+
+            let (old_effective, new_effective) =
+                descriptor.update_enabled(log_enabled, trace_enabled);
+            if old_effective == new_effective {
+                continue;
+            }
+
+            let module_id = descriptor.module_id();
+            if module_state(module_id).is_none() {
+                continue;
+            }
+            let delta = if new_effective { 1 } else { -1 };
+            *module_deltas.entry(module_id).or_insert(0) += delta;
+        }
+
         for (module_id, delta) in module_deltas {
             self.apply_module_delta(module_id, delta);
         }
@@ -1229,7 +1303,7 @@ pub fn clear_dyndbg_rule() {
     clear_dyndbg_rules();
 }
 
-// 向规则链追加规则
+// 向规则链追加规则（增量路径：链尾必胜，免重放）
 pub fn append_dyndbg_rule(snapshot: DyndbgRuleSnapshot, action: DyndbgRuleActionSnapshot) {
     let mut state = DYNDBG_STATE.lock();
     let new_entry: DyndbgRuleEntry = DyndbgRuleEntrySnapshot {
@@ -1240,7 +1314,24 @@ pub fn append_dyndbg_rule(snapshot: DyndbgRuleSnapshot, action: DyndbgRuleAction
     let affected = state.collect_candidates_for_rule_entries(core::slice::from_ref(&new_entry));
 
     state.rules.push(new_entry);
-    state.refresh_registered_descriptors(affected);
+    // 先取出新规则的动作/flags（传值避免与 &mut self 的借用冲突），
+    // 再对命中集做增量应用。
+    let (new_action, flags_set, flags_clear, flags_override) = {
+        let entry = state.rules.last().unwrap();
+        (
+            entry.action,
+            entry.rule.flags_set,
+            entry.rule.flags_clear,
+            entry.rule.flags_override,
+        )
+    };
+    state.refresh_registered_descriptors_incremental(
+        affected,
+        new_action,
+        flags_set,
+        flags_clear,
+        flags_override,
+    );
 }
 
 // 获取整个规则链快照
