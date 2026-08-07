@@ -91,7 +91,8 @@ impl FileOps for DynamicDebugFileOps {
         writeln!(
             printer,
             "usage: [file=<kw>] [module=<kw>] [func=<kw>] [line=<n>] <action> | del <id> | clear\n\
-             action: +p|-p|+trace|-trace [+|-|=][f][l][m][t][_]  e.g. +pfl (enable log with func+line prefixes), +f (flags only), =fl (overwrite to func+line), +_ (clear all flags)"
+             action: +p|-p|+trace|-trace [+|-|=][f][l][m][t][_]  e.g. +pfl (enable log with func+line prefixes), +f (flags only), =fl (overwrite to func+line), +_ (clear all flags)\n\
+             match: exact value | path segment(s) (module=ext2, module=ext2::dir, file=dir.rs) | wildcard (*ext2*, ?)"
         )?;
 
         Ok(printer.bytes_written())

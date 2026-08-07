@@ -201,18 +201,94 @@ impl DyndbgRule {
             return true;
         }
 
-        selector_match(&self.file_keyword, Some(descriptor.file))
-            && selector_match(&self.module_keyword, Some(descriptor.module_path))
-            && selector_match(&self.function_keyword, descriptor.function_name())
+        selector_match(&self.file_keyword, Some(descriptor.file), Some("/"))
+            && selector_match(&self.module_keyword, Some(descriptor.module_path), Some("::"))
+            && selector_match(&self.function_keyword, descriptor.function_name(), None)
             && self.line.is_none_or(|line| descriptor.line == line)
     }
 }
 
-// value包含keyword则匹配，当selector为None时总是匹配（真正的match逻辑是&&）
-fn selector_match(selector: &Option<String>, value: Option<&str>) -> bool {
+// ── 选择器匹配语义 ────────────────────────────────────────────────────────
+// 三通道：精确(完整值) → 段精确(短名/多段交集) → 通配符(*/?)扫描。
+// 无子串（contains）匹配——"包含"语义由段倒排索引以精确查找实现。
+// 该谓词与索引收集路径（collect_by_keyword_exact_first）结果一致，
+// 保证 index=on/off 两条路径输出相同候选集（消融实验前提）。
+
+/// 判断字符串是否含通配符 `*` 或 `?`。
+fn has_wildcard(s: &str) -> bool {
+    s.contains('*') || s.contains('?')
+}
+
+/// 类 glob 匹配：`*` 匹配任意字符序列（含空），`?` 匹配单个字符。
+/// 经典贪心两指针实现（无递归、无回溯指数级）。
+fn match_wildcard(pattern: &str, text: &str) -> bool {
+    let p = pattern.as_bytes();
+    let t = text.as_bytes();
+    let (mut pi, mut ti) = (0usize, 0usize);
+    let mut star_pi = None;
+    let mut star_ti = 0usize;
+    while ti < t.len() {
+        //普通字符或 ? 匹配 两指针前进
+        if pi < p.len() && (p[pi] == b'?' || p[pi] == t[ti]) {
+            pi += 1;
+            ti += 1;
+        } 
+        // 若为*，则记录*位置
+        // pattern 指针前进，但 text 指针不动（先假设 * 匹配空串）
+        else if pi < p.len() && p[pi] == b'*' {
+            star_pi = Some(pi);
+            star_ti = ti;
+            pi += 1;
+        } 
+        // 当前匹配失败 但之前有*
+        // 让那个 * 多匹配一个字符（star_ti += 1），然后重新尝试
+        else if let Some(sp) = star_pi {
+            pi = sp + 1;
+            star_ti += 1;
+            ti = star_ti;
+        } 
+        // 匹配失败且没*
+        else {
+            return false;
+        }
+    }
+    // 处理 pattern 末尾的 *
+    while pi < p.len() && p[pi] == b'*' {
+        pi += 1;
+    }
+    pi == p.len()
+}
+
+/// 多段交集：keyword 按分隔符切出的每一段都必须出现在 value 的段集合中。
+/// 例如 module=ext2::dir 匹配模块路径含 `ext2` 段且含 `dir` 段的所有描述符。
+fn path_segments_match(keyword: &str, value: &str, sep: &str) -> bool {
+    keyword
+        .split(sep)
+        .filter(|s| !s.is_empty())
+        .all(|seg| value.split(sep).any(|v| v == seg))
+}
+
+/// 谓词：value（完整值）是否匹配 keyword。
+/// `sep=None` 表示不分段（如函数名，原子值）。
+fn value_matches(keyword: &str, value: &str, sep: Option<&str>) -> bool {
+    if has_wildcard(keyword) {
+        return match_wildcard(keyword, value);
+    }
+    if value == keyword {
+        return true;
+    }
+    sep.is_some_and(|sep| path_segments_match(keyword, value, sep))
+}
+
+// 选择器为None时总是匹配（真正的match逻辑是&&）
+fn selector_match(
+    selector: &Option<String>,
+    value: Option<&str>,
+    sep: Option<&str>,
+) -> bool {
     match selector {
         None => true,
-        Some(needle) => value.is_some_and(|value| value.contains(needle)),
+        Some(needle) => value.is_some_and(|value| value_matches(needle, value, sep)),
     }
 }
 
@@ -220,10 +296,16 @@ struct DyndbgState {
     rules: Vec<DyndbgRuleEntry>,
     module_id_by_path: BTreeMap<&'static str, u32>,
     module_keys: BTreeMap<u32, ModuleKey>,
+    /// 主索引：完整路径/函数名/行号 → 描述符组（精确查找）。
     file_index: BTreeMap<&'static str, Vec<&'static DebugDescriptor>>,
     module_index: BTreeMap<&'static str, Vec<&'static DebugDescriptor>>,
     function_index: BTreeMap<&'static str, Vec<&'static DebugDescriptor>>,
     line_index: BTreeMap<u32, Vec<&'static DebugDescriptor>>,
+    /// 段倒排索引：module_path 按 `::` 切段，每段 → 描述符组。
+    /// 支持 Linux 式短名（如 `module=ext2`）与多段交集（如 `module=ext2::dir`）。
+    module_segment_index: BTreeMap<&'static str, Vec<&'static DebugDescriptor>>,
+    /// 段倒排索引：file 路径按 `/` 切段（含 basename），如 `file=dir.rs`。
+    file_segment_index: BTreeMap<&'static str, Vec<&'static DebugDescriptor>>,
     /// Next hotspot counter index to assign (registry order).
     hot_site_count: usize,
 }
@@ -244,6 +326,8 @@ impl DyndbgState {
             module_index: BTreeMap::new(),
             function_index: BTreeMap::new(),
             line_index: BTreeMap::new(),
+            module_segment_index: BTreeMap::new(),
+            file_segment_index: BTreeMap::new(),
             hot_site_count: 0,
         }
     }
@@ -256,6 +340,14 @@ impl DyndbgState {
             insert_index_entry(&mut self.function_index, function, descriptor);
         }
         insert_index_entry(&mut self.line_index, descriptor.line, descriptor);
+        // 段倒排索引：module_path 按 `::` 切段，file 按 `/` 切段。
+        // split 产生的段是源 &'static str 的切片，零分配。
+        for segment in descriptor.module_path.split("::") {
+            insert_index_entry(&mut self.module_segment_index, segment, descriptor);
+        }
+        for segment in descriptor.file.split('/') {
+            insert_index_entry(&mut self.file_segment_index, segment, descriptor);
+        }
 
         let module_id = self.allocate_module_id(descriptor.module_path);
         descriptor.init_module_id(module_id);
@@ -489,17 +581,27 @@ impl DyndbgState {
         let mut candidates: Option<Vec<&'static DebugDescriptor>> = None;
 
         if let Some(file_keyword) = &rule.file_keyword {
-            let matched = collect_by_keyword(&self.file_index, file_keyword);
+            let matched = collect_by_keyword_exact_first(
+                &self.file_index,
+                &self.file_segment_index,
+                file_keyword,
+                "/",
+            );
             intersect_candidates(&mut candidates, matched);
         }
 
         if let Some(module_keyword) = &rule.module_keyword {
-            let matched = collect_by_keyword(&self.module_index, module_keyword);
+            let matched = collect_by_keyword_exact_first(
+                &self.module_index,
+                &self.module_segment_index,
+                module_keyword,
+                "::",
+            );
             intersect_candidates(&mut candidates, matched);
         }
 
         if let Some(function_keyword) = &rule.function_keyword {
-            let matched = collect_by_keyword(&self.function_index, function_keyword);
+            let matched = collect_function_candidates(&self.function_index, function_keyword);
             intersect_candidates(&mut candidates, matched);
         }
 
@@ -556,13 +658,62 @@ fn insert_index_entry<K: Ord + Copy>(
 }
 
 //通过keyword在索引表里查找匹配的descriptor列表
-fn collect_by_keyword(
+/// 三通道候选收集（module/file 维度）：
+/// 1. 完整值精确 → 主索引精确查找 O(log N)
+/// 2. 段精确（短名/多段交集）→ 段倒排索引逐段精确查找 + 交集 O(k·log N)
+/// 3. 通配符 → 主索引键 match_wildcard 扫描 O(m)
+/// 结果与谓词 `value_matches` 一致（无 contains 兜底）。
+fn collect_by_keyword_exact_first(
+    index: &BTreeMap<&'static str, Vec<&'static DebugDescriptor>>,
+    segment_index: &BTreeMap<&'static str, Vec<&'static DebugDescriptor>>,
+    keyword: &str,
+    sep: &str,
+) -> Vec<&'static DebugDescriptor> {
+    if !has_wildcard(keyword) {
+        // 通道 1：完整值精确。
+        if let Some(matched) = index.get(keyword) {
+            return matched.clone();
+        }
+        // 通道 2：段精确——单段直接查；多段逐段查表后取交集。
+        let segments: alloc::vec::Vec<&str> =
+            keyword.split(sep).filter(|s| !s.is_empty()).collect();
+        let mut seg_matched: Option<Vec<&'static DebugDescriptor>> = None;
+        for seg in &segments {
+            let Some(group) = segment_index.get(*seg) else {
+                // 某段不在倒排表中 → 无描述符含该段。
+                return Vec::new();
+            };
+            intersect_candidates(&mut seg_matched, group.clone());
+        }
+        if let Some(matched) = seg_matched {
+            return matched;
+        }
+    }
+    // 通道 3：通配符扫描主索引键。
+    let mut matched = Vec::new();
+    for (indexed_value, descriptors) in index {
+        if match_wildcard(keyword, indexed_value) {
+            matched.extend(descriptors.iter().copied());
+        }
+    }
+    matched
+}
+
+/// 候选收集（function 维度）：函数名是原子值，无段概念——
+/// 精确查找（O(log N)）→ 通配符扫描兜底。
+fn collect_function_candidates(
     index: &BTreeMap<&'static str, Vec<&'static DebugDescriptor>>,
     keyword: &str,
 ) -> Vec<&'static DebugDescriptor> {
+    if !has_wildcard(keyword) {
+        if let Some(matched) = index.get(keyword) {
+            return matched.clone();
+        }
+        return Vec::new();
+    }
     let mut matched = Vec::new();
     for (indexed_value, descriptors) in index {
-        if indexed_value.contains(keyword) {
+        if match_wildcard(keyword, indexed_value) {
             matched.extend(descriptors.iter().copied());
         }
     }
