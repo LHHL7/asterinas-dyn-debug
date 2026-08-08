@@ -1404,10 +1404,17 @@ macro_rules! dyndbg_debug {
             // 获取当前函数完整名称（包含模块路径）
             fn __dyndbg_function_name() -> &'static str {
                 fn __dyndbg_fn_marker() {}
-                let type_name = core::any::type_name_of_val(&__dyndbg_fn_marker);
-                type_name
+                let full = core::any::type_name_of_val(&__dyndbg_fn_marker);
+                // "crate::mod::user_fn::__dyndbg_function_name::__dyndbg_fn_marker"
+                // -> strip the two internal items -> "crate::mod::user_fn" -> "user_fn".
+                // func matching is atomic (no segment channel under the
+                // three-channel engine), so the descriptor stores the short
+                // function name; partial names need the wildcard channel.
+                let path = full
                     .strip_suffix("::__dyndbg_fn_marker")
-                    .unwrap_or(type_name)
+                    .and_then(|p| p.strip_suffix("::__dyndbg_function_name"))
+                    .unwrap_or(full);
+                path.rsplit_once("::").map(|(_, f)| f).unwrap_or(path)
             }
             static DESCRIPTOR: $crate::DebugDescriptor = $crate::DebugDescriptor::new(
                 file!(),
@@ -1546,10 +1553,12 @@ macro_rules! dyndbg_debug {
         {
             fn __branch_function_name() -> &'static str {
                 fn __branch_fn_marker() {}
-                let type_name = core::any::type_name_of_val(&__branch_fn_marker);
-                type_name
+                let full = core::any::type_name_of_val(&__branch_fn_marker);
+                let path = full
                     .strip_suffix("::__branch_fn_marker")
-                    .unwrap_or(type_name)
+                    .and_then(|p| p.strip_suffix("::__branch_function_name"))
+                    .unwrap_or(full);
+                path.rsplit_once("::").map(|(_, f)| f).unwrap_or(path)
             }
             static DESCRIPTOR: $crate::DebugDescriptor = $crate::DebugDescriptor::new(
                 file!(),
@@ -1597,10 +1606,17 @@ macro_rules! dyndbg_debug_site {
         {
             fn __dyndbg_function_name() -> &'static str {
                 fn __dyndbg_fn_marker() {}
-                let type_name = core::any::type_name_of_val(&__dyndbg_fn_marker);
-                type_name
+                let full = core::any::type_name_of_val(&__dyndbg_fn_marker);
+                // "crate::mod::user_fn::__dyndbg_function_name::__dyndbg_fn_marker"
+                // -> strip the two internal items -> "crate::mod::user_fn" -> "user_fn".
+                // func matching is atomic (no segment channel under the
+                // three-channel engine), so the descriptor stores the short
+                // function name; partial names need the wildcard channel.
+                let path = full
                     .strip_suffix("::__dyndbg_fn_marker")
-                    .unwrap_or(type_name)
+                    .and_then(|p| p.strip_suffix("::__dyndbg_function_name"))
+                    .unwrap_or(full);
+                path.rsplit_once("::").map(|(_, f)| f).unwrap_or(path)
             }
             static DESCRIPTOR: $crate::DebugDescriptor = $crate::DebugDescriptor::new(
                 file!(),
@@ -1738,10 +1754,12 @@ macro_rules! dyndbg_debug_site {
         {
             fn __branch_function_name() -> &'static str {
                 fn __branch_fn_marker() {}
-                let type_name = core::any::type_name_of_val(&__branch_fn_marker);
-                type_name
+                let full = core::any::type_name_of_val(&__branch_fn_marker);
+                let path = full
                     .strip_suffix("::__branch_fn_marker")
-                    .unwrap_or(type_name)
+                    .and_then(|p| p.strip_suffix("::__branch_function_name"))
+                    .unwrap_or(full);
+                path.rsplit_once("::").map(|(_, f)| f).unwrap_or(path)
             }
             static DESCRIPTOR: $crate::DebugDescriptor = $crate::DebugDescriptor::new(
                 file!(),
