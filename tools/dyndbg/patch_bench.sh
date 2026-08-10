@@ -1,11 +1,26 @@
 #!/bin/sh
 # Test: P-02 (patch transaction benchmark; compare per-site vs batch in one run)
+#
+# Default PATCH_RULE is the FULL-module rule `module=* +p`: it hits all
+# N sites / M modules, so per_site=N transactions vs batch=M transactions —
+# the transaction-count convergence (O(sites) -> O(modules)) this benchmark
+# measures. Run on the real kernel (N=283/M=153) or on a synthetic build
+# (gen_synth_sites.py N --modules M) for scale extrapolation.
 set -eu
 
 PROC=/proc/sys/kernel/dynamic_debug
 STATS=/proc/sys/kernel/dyndbg_stats
 
-MODULE_KEY=${MODULE_KEY:-dyndbg_bench}
+# PATCH_RULE: rule driving the toggle. Default full-module rule; override
+# for single-module runs, e.g. PATCH_RULE='module=dyndbg_bench +p'
+# (or the legacy MODULE_KEY=foo env, which expands to module=foo +p).
+if [ -n "${PATCH_RULE+x}" ]; then
+  : # explicit PATCH_RULE
+elif [ -n "${MODULE_KEY+x}" ]; then
+  PATCH_RULE="module=$MODULE_KEY +p"
+else
+  PATCH_RULE="module=* +p"
+fi
 PATCH_ITERS=${PATCH_ITERS:-1000}
 PATCH_MODE=${PATCH_MODE:-toggle}
 PREPARE_BENCH=${PREPARE_BENCH:-0}
@@ -80,7 +95,7 @@ run_case() {
     case "$PATCH_MODE" in
       enable)
         op_start=$(read_uptime)
-        run_rule "module=$MODULE_KEY +p"
+        run_rule "$PATCH_RULE"
         op_end=$(read_uptime)
         op_elapsed=$(awk -v s="$op_start" -v e="$op_end" 'BEGIN{printf "%.6f", e-s}')
         enable_elapsed=$(awk -v a="$enable_elapsed" -v b="$op_elapsed" 'BEGIN{printf "%.6f", a+b}')
@@ -94,7 +109,7 @@ run_case() {
         ;;
       toggle)
         op_start=$(read_uptime)
-        run_rule "module=$MODULE_KEY +p"
+        run_rule "$PATCH_RULE"
         op_end=$(read_uptime)
         op_elapsed=$(awk -v s="$op_start" -v e="$op_end" 'BEGIN{printf "%.6f", e-s}')
         enable_elapsed=$(awk -v a="$enable_elapsed" -v b="$op_elapsed" 'BEGIN{printf "%.6f", a+b}')
