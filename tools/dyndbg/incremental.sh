@@ -144,7 +144,16 @@ echo "recompute=incremental" > "$BENCH"
 if [ "$inc_state" = "$full_state" ]; then
   record_case "EQ-04" "-" pass "incremental == full state" "-" "-" "-" "-" "-" "-"
 else
-  record_case "EQ-04" "-" fail "incremental == full state (diff in descriptor columns)" "-" "-" "-" "-" "-" "-"
+  # 打印差异行（行号 + 两种模式下的原始行）便于定位不一致的列。
+  d=$(awk -v inc="$inc_state" -v full="$full_state" '
+    BEGIN {
+      n = split(inc, a, "\n")
+      m = split(full, b, "\n")
+      for (i = 1; i <= (n > m ? n : m); i++) {
+        if (a[i] != b[i]) printf "L%d INC[%s] vs FULL[%s]; ", i, a[i], b[i]
+      }
+    }')
+  record_case "EQ-04" "-" fail "incremental != full: $d" "-" "-" "-" "-" "-" "-"
 fi
 
 # ---------- I-03: chain-length decoupling ----------
