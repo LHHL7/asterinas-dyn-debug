@@ -68,7 +68,7 @@ record_case() {
   append_lat=$7
   del_lat=$8
   full_desc=$9
-  full_lat=$10
+  full_lat=${10}
   ensure_csv
   echo "RESULT test=$case_id chain_len=$chain_len status=$status append_desc=$append_desc del_desc=$del_desc append_lat_avg_us=$append_lat del_lat_avg_us=$del_lat full_desc=$full_desc full_lat_us=$full_lat run_id=$RUN_ID details=$details"
   echo "$RUN_ID,$case_id,$chain_len,$append_desc,$del_desc,$append_lat,$del_lat,$full_desc,$full_lat,$status,$details" >> "$CSV_FILE"
