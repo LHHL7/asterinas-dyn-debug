@@ -9,6 +9,9 @@ BENCH_ENABLED_MARGIN_US=${BENCH_ENABLED_MARGIN_US:-1000}
 
 MODULE_KEY=${MODULE_KEY:-dyndbg_bench}
 FILE_KEY=${FILE_KEY:-dyndbg_bench.rs}
+# Three-channel engine: func is atomic exact on the SHORT function name
+# (descriptor stores it without the module path). Partial names need the
+# wildcard channel (func=*bench_lo*).
 FUNC_KEY=${FUNC_KEY:-bench_log}
 ITERS=${ITERS:-100}
 LINE_KEY=${LINE_KEY:-}
@@ -67,6 +70,17 @@ run_bench() {
   fi
 }
 
+# log_batch runs all bench_sites functions — needed for assertions that
+# target a bench_sites site (e.g. line= targets bench_log_0 via /etc line key).
+run_bench_batch() {
+  output=$(echo "mode=log_batch iters=$ITERS" > "$BENCH"; cat "$BENCH")
+  echo "$output"
+  LAST_DURATION_US=$(echo "$output" | awk -F= '/^last_duration_us=/{print $2}')
+  if [ -z "$LAST_DURATION_US" ]; then
+    LAST_DURATION_US=0
+  fi
+}
+
 get_rule_count() {
   cat "$PROC" | awk -F'[= ]' '/^rules=/{print $2; exit}'
 }
@@ -75,6 +89,8 @@ measure_disabled_baseline() {
   run_rule "clear"
   run_bench
   DISABLED_BASE_US=$LAST_DURATION_US
+  run_bench_batch
+  DISABLED_BATCH_BASE_US=$LAST_DURATION_US
 }
 
 detect_line_key() {
@@ -177,12 +193,21 @@ run_bench
 assert_enabled
 record_case "F-03" "$ASSERT_STATUS" "enabled" "$ASSERT_ACTUAL" "func=$FUNC_KEY"
 
-# F-04: line selector (always enabled, default LINE_KEY=169)
+# F-04: line selector — /etc/dyndbg_line.txt holds bench_log_0's line
+# (a bench_sites site), so the enabled/disabled verdict uses log_batch
+# (which executes all bench_sites functions) with a batch-disabled baseline.
 run_rule "clear"
 run_rule "line=$LINE_KEY +p"
-run_bench
-assert_enabled
-record_case "F-04" "$ASSERT_STATUS" "enabled" "$ASSERT_ACTUAL" "line=$LINE_KEY"
+run_bench_batch
+threshold_batch_us=$((DISABLED_BATCH_BASE_US + BENCH_ENABLED_MARGIN_US))
+if [ "$LAST_DURATION_US" -le "$threshold_batch_us" ]; then
+  ASSERT_STATUS=fail
+  ASSERT_ACTUAL=disabled
+else
+  ASSERT_STATUS=pass
+  ASSERT_ACTUAL=enabled
+fi
+record_case "F-04" "$ASSERT_STATUS" "enabled" "$ASSERT_ACTUAL" "line=$LINE_KEY (log_batch)"
 
 # F-05: last-match-wins
 run_rule "clear"
@@ -208,16 +233,24 @@ run_bench
 assert_disabled
 record_case "F-06" "$ASSERT_STATUS" "disabled" "$ASSERT_ACTUAL" "toggle module=$MODULE_KEY"
 
-# F-08: multi-layer rule coverage
+# F-08: multi-layer rule coverage — final winner is line= (bench_log_0),
+# so the verdict uses log_batch (same rationale as F-04).
 run_rule "clear"
 run_rule "module=$MODULE_KEY +p"
 run_rule "file=$FILE_KEY +p"
 run_rule "func=$FUNC_KEY -p"
 run_rule "line=$LINE_KEY +p"
-run_bench
+run_bench_batch
 run_rule "clear"
-assert_enabled
-record_case "F-08" "$ASSERT_STATUS" "enabled" "$ASSERT_ACTUAL" "module=$MODULE_KEY file=$FILE_KEY func=$FUNC_KEY"
+threshold_batch_us=$((DISABLED_BATCH_BASE_US + BENCH_ENABLED_MARGIN_US))
+if [ "$LAST_DURATION_US" -le "$threshold_batch_us" ]; then
+  ASSERT_STATUS=fail
+  ASSERT_ACTUAL=disabled
+else
+  ASSERT_STATUS=pass
+  ASSERT_ACTUAL=enabled
+fi
+record_case "F-08" "$ASSERT_STATUS" "enabled" "$ASSERT_ACTUAL" "module=$MODULE_KEY file=$FILE_KEY func=$FUNC_KEY line=$LINE_KEY (log_batch)"
 
 # F-07: invalid inputs (best-effort)
 assert_invalid_input

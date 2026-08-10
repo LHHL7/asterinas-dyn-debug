@@ -27,6 +27,12 @@ RUN_INDEX_ABLATION=${RUN_INDEX_ABLATION:-1}
 RUN_PERF=${RUN_PERF:-1}
 RUN_WORKLOAD=${RUN_WORKLOAD:-1}
 RUN_PATCH_BENCH=${RUN_PATCH_BENCH:-1}
+RUN_TRACE=${RUN_TRACE:-1}
+RUN_FLAGS=${RUN_FLAGS:-1}
+RUN_STATUS=${RUN_STATUS:-1}
+RUN_MATCH3=${RUN_MATCH3:-1}
+RUN_ROBUSTNESS=${RUN_ROBUSTNESS:-1}
+RUN_INCREMENTAL=${RUN_INCREMENTAL:-1}
 
 run_script() {
   name=$1
@@ -61,6 +67,31 @@ fi
 
 if [ "$RUN_PATCH_BENCH" -ne 0 ]; then
   run_script "patch_bench" "$SCRIPT_DIR/patch_bench.sh"
+fi
+
+# New-feature suites (T/FL/S/M/R + I-03/EQ): same build group as F.
+if [ "$RUN_TRACE" -ne 0 ]; then
+  run_script "trace" "$SCRIPT_DIR/trace.sh"
+fi
+
+if [ "$RUN_FLAGS" -ne 0 ]; then
+  run_script "flags" "$SCRIPT_DIR/flags.sh"
+fi
+
+if [ "$RUN_STATUS" -ne 0 ]; then
+  run_script "status" "$SCRIPT_DIR/status.sh"
+fi
+
+if [ "$RUN_MATCH3" -ne 0 ]; then
+  run_script "match3" "$SCRIPT_DIR/match3.sh"
+fi
+
+if [ "$RUN_ROBUSTNESS" -ne 0 ]; then
+  run_script "robustness" "$SCRIPT_DIR/robustness.sh"
+fi
+
+if [ "$RUN_INCREMENTAL" -ne 0 ]; then
+  run_script "incremental" "$SCRIPT_DIR/incremental.sh"
 fi
 
 echo "all tests finished"

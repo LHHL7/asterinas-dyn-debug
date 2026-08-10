@@ -14,12 +14,29 @@ PROC=/proc/sys/kernel/dynamic_debug
 STATS=/proc/sys/kernel/dyndbg_stats
 BENCH=/proc/sys/kernel/dyndbg_bench
 
-MODULE_KEY=${MODULE_KEY:-dyndbg_bench}
+# MODULE_KEY: auto-detect multi-module synthetic mode (gen_synth_sites.py
+# --modules M). In that mode `module=dyndbg_bench` would still match ALL
+# sites (ancestor segment), defeating the non-uniform selectivity — the
+# first synthetic module (bench_m0, ~N/M sites) is used instead. Env var
+# always wins.
+MODULE_KEY=${MODULE_KEY:-}
+if [ -z "$MODULE_KEY" ]; then
+  if cat "$PROC" 2>/dev/null | grep -q 'bench_m0'; then
+    MODULE_KEY=bench_m0
+  else
+    MODULE_KEY=dyndbg_bench
+  fi
+fi
 # FILE_KEY: synthetic sites use "bench_sites.rs"; real sites use "dyndbg_bench.rs".
 # Prefer the env var; then try /etc/dyndbg_file.txt (set by Nix for synthetic sites);
 # otherwise fall back to the original default.
 _SYNTH_FILE=$(cat /etc/dyndbg_file.txt 2>/dev/null || echo "")
 FILE_KEY=${FILE_KEY:-${_SYNTH_FILE:-dyndbg_bench.rs}}
+# FUNC_KEY: descriptor stores the SHORT function name (macro strips the full
+# path), so func is atomic exact on short names under the three-channel
+# engine — a bare `bench_log_0` matches directly via channel 1 (O(log m)).
+# Do NOT pass a wildcard here: it would switch the ablation to the
+# wildcard-scan channel (O(m)) and distort the exact-lookup comparison.
 FUNC_KEY=${FUNC_KEY:-bench_log_0}
 LINE_KEY=${LINE_KEY:-$(cat /etc/dyndbg_line.txt 2>/dev/null || echo "215")}
 INDEX_ITERS=${INDEX_ITERS:-10000}
