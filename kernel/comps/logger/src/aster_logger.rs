@@ -450,12 +450,18 @@ impl DyndbgState {
     fn refresh_registered_descriptors_incremental(
         &mut self,
         affected: Vec<&'static DebugDescriptor>,
+        rule: &DyndbgRule,
         action: DyndbgRuleAction,
         flags_set: u8,
         flags_clear: u8,
         flags_override: Option<u8>,
     ) {
         let tsc_start = ostd::arch::read_tsc();
+
+        // recompute=full（消融开关）时 collect 把候选集扩大到全部描述符，
+        // 候选集不等于新规则命中集——增量应用前必须按新规则过滤，只对
+        // 命中者应用动作；incremental 时候选集==命中集，过滤整体跳过。
+        let need_filter = !get_dyndbg_recompute_enabled();
 
         let mut seen = BTreeSet::new();
         let mut module_deltas = BTreeMap::<u32, i64>::new();
@@ -465,6 +471,11 @@ impl DyndbgState {
                 continue;
             }
             DYNDBG_DESCRIPTORS_RECOMPUTED.fetch_add(1, Ordering::Relaxed);
+
+            // 计数在过滤前：recompute=full 的消融语义保持（重算全部候选）。
+            if need_filter && !rule.matches_descriptor(descriptor) {
+                continue;
+            }
 
             // 增量应用：动作只改其对应维度，其余维度保持当前持久状态。
             let cur_log = descriptor.should_log_fast();
@@ -1325,8 +1336,10 @@ pub fn append_dyndbg_rule(snapshot: DyndbgRuleSnapshot, action: DyndbgRuleAction
             entry.rule.flags_override,
         )
     };
+    let new_rule = state.rules.last().unwrap().rule.clone();
     state.refresh_registered_descriptors_incremental(
         affected,
+        &new_rule,
         new_action,
         flags_set,
         flags_clear,

@@ -110,8 +110,9 @@ else
 fi
 
 # S-05: del <id> removes the rule; remaining chain state is reflected
-# (r1=module +p removed -> only func=bench_log -p remains -> exactly one
-#  dyndbg_bench site (bench_log) disabled; func matches the short name)
+# (r1=module +p removed -> only func=bench_log -p remains. Replay semantics
+#  (Linux): non-matching descriptors fall back to the default disabled state,
+#  so enabled=0 is the correct result, NOT total-1.)
 run_rule "clear"
 run_rule "module=$MODULE_KEY +p"
 run_rule "func=bench_log -p"
@@ -119,13 +120,16 @@ run_rule "del 0"
 r=$(rule_count)
 enabled=$(desc_matching ' +p ')
 total=$(desc_matching 'dyndbg_bench')
-if [ "$r" = "1" ] && [ "$enabled" = $((total - 1)) ]; then
-  record_case "S-05" pass "after del 0: rules=1, bench_log -p only" "rules=$r enabled=$enabled total=$total" "del"
+if [ "$r" = "1" ] && [ "$enabled" = "0" ]; then
+  record_case "S-05" pass "after del 0: rules=1, replay resets to default -p" "rules=$r enabled=$enabled total=$total" "del"
 else
-  record_case "S-05" fail "after del 0: rules=1, bench_log -p only" "rules=$r enabled=$enabled total=$total" "del"
+  record_case "S-05" fail "after del 0: rules=1, replay resets to default -p" "rules=$r enabled=$enabled total=$total" "del"
 fi
 
 # S-06: del updates the state column (remove -p, last winner becomes +p)
+# Note: after module=-p, ALL descriptors are -p (65 bench disabled by the
+# rule + the other 218 default-disabled), so disabled must equal the total
+# descriptor count, not the module hit set.
 run_rule "clear"
 run_rule "module=$MODULE_KEY +p"
 run_rule "module=$MODULE_KEY -p"
@@ -133,10 +137,11 @@ disabled=$(desc_matching ' -p ')
 run_rule "del 1"
 enabled=$(desc_matching ' +p ')
 total=$(desc_matching 'dyndbg_bench')
-if [ "$disabled" = "$total" ] && [ "$enabled" = "$total" ]; then
-  record_case "S-06" pass "del -p flips state back to +p" "disabled=$disabled enabled=$enabled total=$total" "del state update"
+n=$(desc_count_printed)
+if [ "$disabled" = "$n" ] && [ "$enabled" = "$total" ]; then
+  record_case "S-06" pass "del -p flips state back to +p" "disabled=$disabled enabled=$enabled total=$total desc=$n" "del state update"
 else
-  record_case "S-06" fail "del -p flips state back to +p" "disabled=$disabled enabled=$enabled total=$total" "del state update"
+  record_case "S-06" fail "del -p flips state back to +p" "disabled=$disabled enabled=$enabled total=$total desc=$n" "del state update"
 fi
 
 # S-07: clear resets every site to -p

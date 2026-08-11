@@ -447,6 +447,9 @@ run_workload_case() {
   runner=$2
 
   run_rule "clear"
+  # 建结果目录必须在 run_one_series 写入 per_round.csv 之前（否则首轮
+  # echo >> "$PER_ROUND_CSV" 报 nonexistent directory）。
+  ensure_csv
 
   case "$WORKLOAD_MODE" in
     baseline)
@@ -469,7 +472,6 @@ run_workload_case() {
       ;;
   esac
 
-  ensure_csv
   emit_result "test=P-01R workload=$workload workload_mode=$WORKLOAD_MODE avg_us=$avg_us sd_us=$sd_us ci95_us=$ci95_us min_us=$min_us max_us=$max_us task_clock_ms=$TASK_CLOCK_MS context_switches=$CONTEXT_SWITCHES page_faults=$PAGE_FAULTS iters=$ITERS runs=$RUNS rules=$rules run_id=$RUN_ID"
   echo "$RUN_ID,$workload,$WORKLOAD_MODE,$avg_us,$sd_us,$ci95_us,$min_us,$max_us,$TASK_CLOCK_MS,$CONTEXT_SWITCHES,$PAGE_FAULTS,$ITERS,$RUNS,$rules" >> "$CSV_FILE"
   run_rule "clear"

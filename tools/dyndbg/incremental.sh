@@ -88,9 +88,10 @@ desc_section() {
 run_rule "clear"
 DISABLED_BASE_US=$(bench_duration)
 
+# EQ 判定直接读 desc 状态列（bench_log 的 +p|-p），不依赖 bench duration：
+# LOG_LEVEL=warn 下 DEBUG 打印被过滤，启用/禁用态的耗时差不足以可靠判定。
 enabled() {
-  d=$(bench_duration)
-  [ -n "$d" ] && [ "$d" -gt $((DISABLED_BASE_US + BENCH_ENABLED_MARGIN_US)) ]
+  cat "$PROC" | grep ' bench_log ' | grep -q ' +p '
 }
 
 # EQ-01: last-match-wins preserved on append
