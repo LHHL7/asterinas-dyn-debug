@@ -1103,6 +1103,47 @@ pub fn format_dyndbg_log(
     buf
 }
 
+/// Zero-overhead literal emit: the caller site passes only the static fmt
+/// string (loaded by the label block with a register-only `mov`), so the
+/// disabled NOP5 path materializes nothing.  All formatting/allocation
+/// happens in this dedicated stack frame, isolated from the call site.
+///
+/// `fmt` arrives as `&&str`: the label block loads the *address of* the
+/// static `&str` slot (a thin pointer that fits a register), so the first
+/// thing we do is dereference it back to the string.
+#[inline(never)]
+pub fn __dyndbg_label_emit_const(
+    descriptor: &'static DebugDescriptor,
+    fmt: &'static &'static str,
+) {
+    // Call sites using the literal branch are expected to pass a plain
+    // message without format placeholders (inline captures are rewritten to
+    // explicit arguments so they take the general branch instead).
+    let fmt: &'static str = fmt;
+    if descriptor.should_log_fast() {
+        let __flags = descriptor.format_flags();
+        if __flags == 0 {
+            log::debug!("{}", fmt);
+        } else {
+            let __task_ptr = if __flags & crate::FLAG_THREAD != 0 {
+                ostd::task::Task::current()
+                    .map(|__t| (&*__t as *const _) as usize)
+            } else {
+                None
+            };
+            // format_args! here constructs in this frame (never merged with
+            // caller slots), keeping the caller's disabled path instruction-free.
+            log::debug!(
+                "{}",
+                format_dyndbg_log(descriptor, format_args!("{}", fmt), __task_ptr)
+            );
+        }
+    }
+    if descriptor.should_trace_fast() {
+        crate::dyndbg_trace::push_trace_event(descriptor);
+    }
+}
+
 /// asm label 块的 emit 封装（inline(never)）：格式化/分配全部在独立栈帧
 /// 中进行。asm label 机制下编译器可能把 label 块与调用点共享栈槽，
 /// 内联的 String 缓冲会覆盖调用点保存的寄存器——独立函数彻底隔离。
@@ -1440,6 +1481,220 @@ macro_rules! __dyndbg_emit_log {
 // Unified `dyndbg_debug!` macro: choose backend at compile time via features.
 #[macro_export]
 macro_rules! dyndbg_debug {
+    // Zero-overhead literal branch: constant message without arguments.
+    // The format string lives in a static symbol that the label block loads
+    // with a register-only `mov` (no stack writes), so the disabled NOP5
+    // path executes ZERO extra instructions — `nopl; ret`, identical to the
+    // compiled-out baseline.  Arguments are constructed inside the emit
+    // function's own stack frame (never merged with host slots).
+    ($s:literal) => {{
+        #[cfg(feature = "dyndbg")]
+        {
+            fn __dyndbg_function_name() -> &'static str {
+                fn __dyndbg_fn_marker() {}
+                let full = core::any::type_name_of_val(&__dyndbg_fn_marker);
+                let path = full
+                    .strip_suffix("::__dyndbg_fn_marker")
+                    .and_then(|p| p.strip_suffix("::__dyndbg_function_name"))
+                    .unwrap_or(full);
+                path.rsplit_once("::").map(|(_, f)| f).unwrap_or(path)
+            }
+            static DESCRIPTOR: $crate::DebugDescriptor = $crate::DebugDescriptor::new(
+                file!(),
+                module_path!(),
+                Some(__dyndbg_function_name),
+                line!(),
+            );
+            #[$crate::distributed_slice($crate::DYNDBG_DESCRIPTOR_REGISTRY)]
+            static DYNDBG_DESCRIPTOR_ENTRY: &'static $crate::DebugDescriptor = &DESCRIPTOR;
+            #[cfg(target_arch = "x86_64")]
+            {
+                static __DYNDBG_SITE_FMT: &str = $s;
+                #[allow(unsafe_code)]
+                // SAFETY: Same structure as the general branch below — an
+                // exact 5-byte patch slot plus a register-only label block.
+                // The block loads the static fmt/descriptor addresses into
+                // registers and calls the emit helper; no stack writes in
+                // this frame, so no slot-merge hazard, and the disabled path
+                // materializes nothing at all.
+                unsafe {
+                    core::arch::asm!(
+                        concat!(
+                            ".ifndef \"__dyndbg_site_",
+                            module_path!(),
+                            "_",
+                            line!(),
+                            "_",
+                            column!(),
+                            "\"\n",
+                            ".weak \"__dyndbg_site_",
+                            module_path!(),
+                            "_",
+                            line!(),
+                            "_",
+                            column!(),
+                            "\"\n",
+                            "\"__dyndbg_site_",
+                            module_path!(),
+                            "_",
+                            line!(),
+                            "_",
+                            column!(),
+                            "\":\n",
+                            ".endif\n",
+                            ".byte 0x0f, 0x1f, 0x44, 0x00, 0x00\n",
+                            ".if 0\n",
+                            "jmp {0}\n",
+                            ".endif\n",
+                        ),
+                        label {
+                            #[allow(unsafe_code)]
+                            // SAFETY: This inner asm only defines a global symbol at the
+                            // debug block entry for patching targets.
+                            unsafe {
+                                core::arch::asm!(
+                                    concat!(
+                                        ".ifndef \"__dyndbg_target_",
+                                        module_path!(),
+                                        "_",
+                                        line!(),
+                                        "_",
+                                        column!(),
+                                        "\"\n",
+                                        ".weak \"__dyndbg_target_",
+                                        module_path!(),
+                                        "_",
+                                        line!(),
+                                        "_",
+                                        column!(),
+                                        "\"\n",
+                                        "\"__dyndbg_target_",
+                                        module_path!(),
+                                        "_",
+                                        line!(),
+                                        "_",
+                                        column!(),
+                                        "\":\n",
+                                        ".endif\n",
+                                    ),
+                                    options(nomem, nostack)
+                                );
+                            }
+                            #[allow(unsafe_code)]
+                            // SAFETY: Register-only call; the static addresses
+                            // are materialized as immediates inside the block.
+                            // clobber_abi models the call on the main path.
+                            unsafe {
+                                core::arch::asm!(
+                                    "call {emit}",
+                                    emit = in(reg) $crate::__dyndbg_label_emit_const as *const (),
+                                    in("rdi") &DESCRIPTOR,
+                                    in("rsi") &__DYNDBG_SITE_FMT,
+                                    options()
+                                );
+                            }
+                        },
+                        clobber_abi("sysv64"),
+                        options()
+                    );
+                }
+            }
+                // SAFETY: The following extern symbols are declared to refer to
+                // the labels emitted by the asm block above. They are not real
+                // functions to be called by C; we only take their addresses for
+                // patch registration and must ensure the asm defines them.
+                unsafe extern "C" {
+                    #[link_name = concat!(
+                        "__dyndbg_site_",
+                        module_path!(),
+                        "_",
+                        line!(),
+                        "_",
+                        column!()
+                    )]
+                    fn __dyndbg_site() -> bool;
+                    #[link_name = concat!(
+                        "__dyndbg_target_",
+                        module_path!(),
+                        "_",
+                        line!(),
+                        "_",
+                        column!()
+                    )]
+                    fn __dyndbg_target() -> bool;
+                }
+
+                static STATIC_KEY_SITE: ostd::arch::static_key::StaticKeySite =
+                    ostd::arch::static_key::StaticKeySite::new(
+                        __dyndbg_site,
+                        __dyndbg_target,
+                        "dyndbg",
+                    );
+                #[ostd::distributed_slice(ostd::arch::static_key::STATIC_KEY_SITE_REGISTRY)]
+                static STATIC_KEY_REG_ENTRY: &ostd::arch::static_key::StaticKeySite =
+                    &STATIC_KEY_SITE;
+
+                static DYNDBG_KEY_MAPPING: $crate::DyndbgKeyMapping =
+                    $crate::DyndbgKeyMapping {
+                        descriptor: &DESCRIPTOR,
+                        static_key_site: &STATIC_KEY_SITE,
+                    };
+                #[$crate::distributed_slice($crate::DYNDBG_KEY_MAPPING)]
+                static DYNDBG_KEY_MAPPING_ENTRY: &'static $crate::DyndbgKeyMapping =
+                    &DYNDBG_KEY_MAPPING;
+
+            #[cfg(not(target_arch = "x86_64"))]
+            {
+                if $crate::dyndbg_module_enabled(&DESCRIPTOR) {
+                    $crate::__dyndbg_label_emit_const(&DESCRIPTOR, $s);
+                }
+            }
+
+        }
+
+        // Branch-based backend: same static-fmt path (no patching).
+        #[cfg(all(not(feature = "dyndbg"), feature = "branchdbg"))]
+        {
+            fn __branch_function_name() -> &'static str {
+                fn __branch_fn_marker() {}
+                let full = core::any::type_name_of_val(&__branch_fn_marker);
+                let path = full
+                    .strip_suffix("::__branch_fn_marker")
+                    .and_then(|p| p.strip_suffix("::__branch_function_name"))
+                    .unwrap_or(full);
+                path.rsplit_once("::").map(|(_, f)| f).unwrap_or(path)
+            }
+            static DESCRIPTOR: $crate::DebugDescriptor = $crate::DebugDescriptor::new(
+                file!(),
+                module_path!(),
+                Some(__branch_function_name),
+                line!(),
+            );
+            #[$crate::distributed_slice($crate::DYNDBG_DESCRIPTOR_REGISTRY)]
+            static DYNDBG_DESCRIPTOR_ENTRY: &'static $crate::DebugDescriptor = &DESCRIPTOR;
+            if $crate::dyndbg_module_enabled(&DESCRIPTOR) {
+                $crate::__dyndbg_label_emit_const(&DESCRIPTOR, $s);
+            }
+        }
+
+        // No-op backend (neither feature enabled)
+        #[cfg(not(any(feature = "dyndbg", feature = "branchdbg")))]
+        {
+            #[cfg(target_arch = "x86_64")]
+            {
+                #[allow(unsafe_code)]
+                // SAFETY: See the general branch: empty asm aligns LLVM's
+                // optimization behavior with the static-patch path.
+                unsafe {
+                    core::arch::asm!("", options());
+                }
+            }
+        }
+    }};
+
+    // General branch: dynamic arguments need format_args! materialized in the
+    // NORMAL path (label-block construction triggers the asm-goto slot-merge
+    // bug), which costs the disabled path a few instructions per site.
     ($($arg:tt)+) => {{
         // Patch-based backend (static patch site + descriptor)
         #[cfg(feature = "dyndbg")]
@@ -1558,20 +1813,23 @@ macro_rules! dyndbg_debug {
                                     "call {emit}",
                                     emit = in(reg) $crate::__dyndbg_label_emit as *const (),
                                     in("rdi") &DESCRIPTOR,
-                                    // rsi = args: delivered via outer asm's
-                                    // callee-saved r12 input (callbr live-in).
+                                    // rsi = args: reloaded from the normal-path
+                                    // stack slot inside the block; no callee-saved
+                                    // register carries it across the site.
                                     in("rsi") __dyndbg_args,
                                     options()
                                 );
                             }
                         },
-                        // The args pointer crosses the site in callee-saved r12
-                        // (survives the runtime call), and clobber_abi models the
-                        // label-block call's register clobbers on the MAIN path:
-                        // LLVM treats asm-goto label blocks as unreachable, so
-                        // without this the rejoin path reused caller-saved
-                        // registers that the runtime call had clobbered.
-                        in("r12") __dyndbg_args,
+                        // clobber_abi models the label-block call's register
+                        // clobbers on the MAIN path: LLVM treats asm-goto label
+                        // blocks as unreachable, so without this the rejoin path
+                        // reused caller-saved registers that the runtime call
+                        // had clobbered.  The args pointer stays in its stack
+                        // slot on the normal path (the inner asm reloads it),
+                        // keeping the disabled NOP5 path free of the extra
+                        // register save/restore a callee-saved carrier would
+                        // cost.
                         clobber_abi("sysv64"),
                         options()
                     );
@@ -1677,6 +1935,228 @@ macro_rules! dyndbg_debug {
 // 为需要独立 site 标识的场景提供带后缀版本，避免宏展开后符号重名。
 #[macro_export]
 macro_rules! dyndbg_debug_site {
+    // Zero-overhead literal branch (site variant): constant message
+    // without arguments; same zero-instruction disabled path as dyndbg_debug!.
+    // The format string lives in a static symbol that the label block loads
+    // with a register-only `mov` (no stack writes), so the disabled NOP5
+    // path executes ZERO extra instructions — `nopl; ret`, identical to the
+    // compiled-out baseline.  Arguments are constructed inside the emit
+    // function's own stack frame (never merged with host slots).
+    ($site:literal, $s:literal) => {{
+        #[cfg(feature = "dyndbg")]
+        {
+            fn __dyndbg_function_name() -> &'static str {
+                fn __dyndbg_fn_marker() {}
+                let full = core::any::type_name_of_val(&__dyndbg_fn_marker);
+                let path = full
+                    .strip_suffix("::__dyndbg_fn_marker")
+                    .and_then(|p| p.strip_suffix("::__dyndbg_function_name"))
+                    .unwrap_or(full);
+                path.rsplit_once("::").map(|(_, f)| f).unwrap_or(path)
+            }
+            static DESCRIPTOR: $crate::DebugDescriptor = $crate::DebugDescriptor::new(
+                file!(),
+                module_path!(),
+                Some(__dyndbg_function_name),
+                line!(),
+            );
+            #[$crate::distributed_slice($crate::DYNDBG_DESCRIPTOR_REGISTRY)]
+            static DYNDBG_DESCRIPTOR_ENTRY: &'static $crate::DebugDescriptor = &DESCRIPTOR;
+            #[cfg(target_arch = "x86_64")]
+            {
+                static __DYNDBG_SITE_FMT: &str = $s;
+                #[allow(unsafe_code)]
+                // SAFETY: Same structure as the general branch below — an
+                // exact 5-byte patch slot plus a register-only label block.
+                // The block loads the static fmt/descriptor addresses into
+                // registers and calls the emit helper; no stack writes in
+                // this frame, so no slot-merge hazard, and the disabled path
+                // materializes nothing at all.
+                unsafe {
+                    core::arch::asm!(
+                        concat!(
+                            ".ifndef \"__dyndbg_site_",
+                            module_path!(),
+                            "_",
+                            line!(),
+                            "_",
+                            column!(),
+ "_",
+ $site,
+ "\"\n",
+                            ".weak \"__dyndbg_site_",
+                            module_path!(),
+                            "_",
+                            line!(),
+                            "_",
+                            column!(),
+ "_",
+ $site,
+ "\"\n",
+                            "\"__dyndbg_site_",
+                            module_path!(),
+                            "_",
+                            line!(),
+                            "_",
+                            column!(),
+ "_",
+ $site,
+ "\":\n",
+                            ".endif\n",
+                            ".byte 0x0f, 0x1f, 0x44, 0x00, 0x00\n",
+                            ".if 0\n",
+                            "jmp {0}\n",
+                            ".endif\n",
+                        ),
+                        label {
+                            #[allow(unsafe_code)]
+                            // SAFETY: This inner asm only defines a global symbol at the
+                            // debug block entry for patching targets.
+                            unsafe {
+                                core::arch::asm!(
+                                    concat!(
+                                        ".ifndef \"__dyndbg_target_",
+                                        module_path!(),
+                                        "_",
+                                        line!(),
+                                        "_",
+                                        column!(),
+ "_",
+ $site,
+ "\"\n",
+                                        ".weak \"__dyndbg_target_",
+                                        module_path!(),
+                                        "_",
+                                        line!(),
+                                        "_",
+                                        column!(),
+ "_",
+ $site,
+ "\"\n",
+                                        "\"__dyndbg_target_",
+                                        module_path!(),
+                                        "_",
+                                        line!(),
+                                        "_",
+                                        column!(),
+ "_",
+ $site,
+ "\":\n",
+                                        ".endif\n",
+                                    ),
+                                    options(nomem, nostack)
+                                );
+                            }
+                            #[allow(unsafe_code)]
+                            // SAFETY: Register-only call; the static addresses
+                            // are materialized as immediates inside the block.
+                            // clobber_abi models the call on the main path.
+                            unsafe {
+                                core::arch::asm!(
+                                    "call {emit}",
+                                    emit = in(reg) $crate::__dyndbg_label_emit_const as *const (),
+                                    in("rdi") &DESCRIPTOR,
+                                    in("rsi") &__DYNDBG_SITE_FMT,
+                                    options()
+                                );
+                            }
+                        },
+                        clobber_abi("sysv64"),
+                        options()
+                    );
+                }
+            }
+                // SAFETY: The following extern symbols are declared to refer to
+                // the labels emitted by the asm block above. They are not real
+                // functions to be called by C; we only take their addresses for
+                // patch registration and must ensure the asm defines them.
+                unsafe extern "C" {
+                    #[link_name = concat!(
+                        "__dyndbg_site_",
+                        module_path!(),
+                        "_",
+                        line!(),
+                        "_",
+                        column!(), "_", $site)]
+                    fn __dyndbg_site() -> bool;
+                    #[link_name = concat!(
+                        "__dyndbg_target_",
+                        module_path!(),
+                        "_",
+                        line!(),
+                        "_",
+                        column!(), "_", $site)]
+                    fn __dyndbg_target() -> bool;
+                }
+
+                static STATIC_KEY_SITE: ostd::arch::static_key::StaticKeySite =
+                    ostd::arch::static_key::StaticKeySite::new(
+                        __dyndbg_site,
+                        __dyndbg_target,
+                        "dyndbg",
+                    );
+                #[ostd::distributed_slice(ostd::arch::static_key::STATIC_KEY_SITE_REGISTRY)]
+                static STATIC_KEY_REG_ENTRY: &ostd::arch::static_key::StaticKeySite =
+                    &STATIC_KEY_SITE;
+
+                static DYNDBG_KEY_MAPPING: $crate::DyndbgKeyMapping =
+                    $crate::DyndbgKeyMapping {
+                        descriptor: &DESCRIPTOR,
+                        static_key_site: &STATIC_KEY_SITE,
+                    };
+                #[$crate::distributed_slice($crate::DYNDBG_KEY_MAPPING)]
+                static DYNDBG_KEY_MAPPING_ENTRY: &'static $crate::DyndbgKeyMapping =
+                    &DYNDBG_KEY_MAPPING;
+
+            #[cfg(not(target_arch = "x86_64"))]
+            {
+                if $crate::dyndbg_module_enabled(&DESCRIPTOR) {
+                    $crate::__dyndbg_label_emit_const(&DESCRIPTOR, $s);
+                }
+            }
+
+        }
+
+        // Branch-based backend: same static-fmt path (no patching).
+        #[cfg(all(not(feature = "dyndbg"), feature = "branchdbg"))]
+        {
+            fn __branch_function_name() -> &'static str {
+                fn __branch_fn_marker() {}
+                let full = core::any::type_name_of_val(&__branch_fn_marker);
+                let path = full
+                    .strip_suffix("::__branch_fn_marker")
+                    .and_then(|p| p.strip_suffix("::__branch_function_name"))
+                    .unwrap_or(full);
+                path.rsplit_once("::").map(|(_, f)| f).unwrap_or(path)
+            }
+            static DESCRIPTOR: $crate::DebugDescriptor = $crate::DebugDescriptor::new(
+                file!(),
+                module_path!(),
+                Some(__branch_function_name),
+                line!(),
+            );
+            #[$crate::distributed_slice($crate::DYNDBG_DESCRIPTOR_REGISTRY)]
+            static DYNDBG_DESCRIPTOR_ENTRY: &'static $crate::DebugDescriptor = &DESCRIPTOR;
+            if $crate::dyndbg_module_enabled(&DESCRIPTOR) {
+                $crate::__dyndbg_label_emit_const(&DESCRIPTOR, $s);
+            }
+        }
+
+        // No-op backend (neither feature enabled)
+        #[cfg(not(any(feature = "dyndbg", feature = "branchdbg")))]
+        {
+            #[cfg(target_arch = "x86_64")]
+            {
+                #[allow(unsafe_code)]
+                // SAFETY: See the general branch: empty asm aligns LLVM's
+                // optimization behavior with the static-patch path.
+                unsafe {
+                    core::arch::asm!("", options());
+                }
+            }
+        }
+    }};
+
     ($site:literal, $($arg:tt)+) => {{
         #[cfg(feature = "dyndbg")]
         {
@@ -1801,20 +2281,23 @@ macro_rules! dyndbg_debug_site {
                                     "call {emit}",
                                     emit = in(reg) $crate::__dyndbg_label_emit as *const (),
                                     in("rdi") &DESCRIPTOR,
-                                    // rsi = args: delivered via outer asm's
-                                    // callee-saved r12 input (callbr live-in).
+                                    // rsi = args: reloaded from the normal-path
+                                    // stack slot inside the block; no callee-saved
+                                    // register carries it across the site.
                                     in("rsi") __dyndbg_args,
                                     options()
                                 );
                             }
                         },
-                        // The args pointer crosses the site in callee-saved r12
-                        // (survives the runtime call), and clobber_abi models the
-                        // label-block call's register clobbers on the MAIN path:
-                        // LLVM treats asm-goto label blocks as unreachable, so
-                        // without this the rejoin path reused caller-saved
-                        // registers that the runtime call had clobbered.
-                        in("r12") __dyndbg_args,
+                        // clobber_abi models the label-block call's register
+                        // clobbers on the MAIN path: LLVM treats asm-goto label
+                        // blocks as unreachable, so without this the rejoin path
+                        // reused caller-saved registers that the runtime call
+                        // had clobbered.  The args pointer stays in its stack
+                        // slot on the normal path (the inner asm reloads it),
+                        // keeping the disabled NOP5 path free of the extra
+                        // register save/restore a callee-saved carrier would
+                        // cost.
                         clobber_abi("sysv64"),
                         options()
                     );
@@ -1909,6 +2392,218 @@ macro_rules! dyndbg_debug_site {
 // 同样为需要自定义函数标签的场景提供函数版本宏
 #[macro_export]
 macro_rules! dyndbg_debug_func {
+    // Zero-overhead literal branch (func variant): constant message
+    // without arguments; same zero-instruction disabled path as dyndbg_debug!.
+    // The format string lives in a static symbol that the label block loads
+    // with a register-only `mov` (no stack writes), so the disabled NOP5
+    // path executes ZERO extra instructions — `nopl; ret`, identical to the
+    // compiled-out baseline.  Arguments are constructed inside the emit
+    // function's own stack frame (never merged with host slots).
+    ($func:expr, $s:literal) => {{
+        #[cfg(feature = "dyndbg")]
+        {
+            fn __dyndbg_function_name() -> &'static str {
+                fn __dyndbg_fn_marker() {}
+                let full = core::any::type_name_of_val(&__dyndbg_fn_marker);
+                let path = full
+                    .strip_suffix("::__dyndbg_fn_marker")
+                    .and_then(|p| p.strip_suffix("::__dyndbg_function_name"))
+                    .unwrap_or(full);
+                path.rsplit_once("::").map(|(_, f)| f).unwrap_or(path)
+            }
+            static DESCRIPTOR: $crate::DebugDescriptor = $crate::DebugDescriptor::new(
+                file!(),
+                module_path!(),
+                Some(__dyndbg_function_name),
+                line!(),
+            );
+            #[$crate::distributed_slice($crate::DYNDBG_DESCRIPTOR_REGISTRY)]
+            static DYNDBG_DESCRIPTOR_ENTRY: &'static $crate::DebugDescriptor = &DESCRIPTOR;
+            #[cfg(target_arch = "x86_64")]
+            {
+                static __DYNDBG_SITE_FMT: &str = $s;
+                #[allow(unsafe_code)]
+                // SAFETY: Same structure as the general branch below — an
+                // exact 5-byte patch slot plus a register-only label block.
+                // The block loads the static fmt/descriptor addresses into
+                // registers and calls the emit helper; no stack writes in
+                // this frame, so no slot-merge hazard, and the disabled path
+                // materializes nothing at all.
+                unsafe {
+                    core::arch::asm!(
+                        concat!(
+                            ".ifndef \"__dyndbg_site_",
+                            module_path!(),
+                            "_",
+                            line!(),
+                            "_",
+                            column!(),
+                            "\"\n",
+                            ".weak \"__dyndbg_site_",
+                            module_path!(),
+                            "_",
+                            line!(),
+                            "_",
+                            column!(),
+                            "\"\n",
+                            "\"__dyndbg_site_",
+                            module_path!(),
+                            "_",
+                            line!(),
+                            "_",
+                            column!(),
+                            "\":\n",
+                            ".endif\n",
+                            ".byte 0x0f, 0x1f, 0x44, 0x00, 0x00\n",
+                            ".if 0\n",
+                            "jmp {0}\n",
+                            ".endif\n",
+                        ),
+                        label {
+                            #[allow(unsafe_code)]
+                            // SAFETY: This inner asm only defines a global symbol at the
+                            // debug block entry for patching targets.
+                            unsafe {
+                                core::arch::asm!(
+                                    concat!(
+                                        ".ifndef \"__dyndbg_target_",
+                                        module_path!(),
+                                        "_",
+                                        line!(),
+                                        "_",
+                                        column!(),
+                                        "\"\n",
+                                        ".weak \"__dyndbg_target_",
+                                        module_path!(),
+                                        "_",
+                                        line!(),
+                                        "_",
+                                        column!(),
+                                        "\"\n",
+                                        "\"__dyndbg_target_",
+                                        module_path!(),
+                                        "_",
+                                        line!(),
+                                        "_",
+                                        column!(),
+                                        "\":\n",
+                                        ".endif\n",
+                                    ),
+                                    options(nomem, nostack)
+                                );
+                            }
+                            #[allow(unsafe_code)]
+                            // SAFETY: Register-only call; the static addresses
+                            // are materialized as immediates inside the block.
+                            // clobber_abi models the call on the main path.
+                            unsafe {
+                                core::arch::asm!(
+                                    "call {emit}",
+                                    emit = in(reg) $crate::__dyndbg_label_emit_const as *const (),
+                                    in("rdi") &DESCRIPTOR,
+                                    in("rsi") &__DYNDBG_SITE_FMT,
+                                    options()
+                                );
+                            }
+                        },
+                        clobber_abi("sysv64"),
+                        options()
+                    );
+                }
+            }
+                // SAFETY: The following extern symbols are declared to refer to
+                // the labels emitted by the asm block above. They are not real
+                // functions to be called by C; we only take their addresses for
+                // patch registration and must ensure the asm defines them.
+                unsafe extern "C" {
+                    #[link_name = concat!(
+                        "__dyndbg_site_",
+                        module_path!(),
+                        "_",
+                        line!(),
+                        "_",
+                        column!()
+                    )]
+                    fn __dyndbg_site() -> bool;
+                    #[link_name = concat!(
+                        "__dyndbg_target_",
+                        module_path!(),
+                        "_",
+                        line!(),
+                        "_",
+                        column!()
+                    )]
+                    fn __dyndbg_target() -> bool;
+                }
+
+                static STATIC_KEY_SITE: ostd::arch::static_key::StaticKeySite =
+                    ostd::arch::static_key::StaticKeySite::new(
+                        __dyndbg_site,
+                        __dyndbg_target,
+                        "dyndbg",
+                    );
+                #[ostd::distributed_slice(ostd::arch::static_key::STATIC_KEY_SITE_REGISTRY)]
+                static STATIC_KEY_REG_ENTRY: &ostd::arch::static_key::StaticKeySite =
+                    &STATIC_KEY_SITE;
+
+                static DYNDBG_KEY_MAPPING: $crate::DyndbgKeyMapping =
+                    $crate::DyndbgKeyMapping {
+                        descriptor: &DESCRIPTOR,
+                        static_key_site: &STATIC_KEY_SITE,
+                    };
+                #[$crate::distributed_slice($crate::DYNDBG_KEY_MAPPING)]
+                static DYNDBG_KEY_MAPPING_ENTRY: &'static $crate::DyndbgKeyMapping =
+                    &DYNDBG_KEY_MAPPING;
+
+            #[cfg(not(target_arch = "x86_64"))]
+            {
+                if $crate::dyndbg_module_enabled(&DESCRIPTOR) {
+                    $crate::__dyndbg_label_emit_const(&DESCRIPTOR, $s);
+                }
+            }
+
+        }
+
+        // Branch-based backend: same static-fmt path (no patching).
+        #[cfg(all(not(feature = "dyndbg"), feature = "branchdbg"))]
+        {
+            fn __branch_function_name() -> &'static str {
+                fn __branch_fn_marker() {}
+                let full = core::any::type_name_of_val(&__branch_fn_marker);
+                let path = full
+                    .strip_suffix("::__branch_fn_marker")
+                    .and_then(|p| p.strip_suffix("::__branch_function_name"))
+                    .unwrap_or(full);
+                path.rsplit_once("::").map(|(_, f)| f).unwrap_or(path)
+            }
+            static DESCRIPTOR: $crate::DebugDescriptor = $crate::DebugDescriptor::new(
+                file!(),
+                module_path!(),
+                Some(__branch_function_name),
+                line!(),
+            );
+            #[$crate::distributed_slice($crate::DYNDBG_DESCRIPTOR_REGISTRY)]
+            static DYNDBG_DESCRIPTOR_ENTRY: &'static $crate::DebugDescriptor = &DESCRIPTOR;
+            if $crate::dyndbg_module_enabled(&DESCRIPTOR) {
+                $crate::__dyndbg_label_emit_const(&DESCRIPTOR, $s);
+            }
+        }
+
+        // No-op backend (neither feature enabled)
+        #[cfg(not(any(feature = "dyndbg", feature = "branchdbg")))]
+        {
+            #[cfg(target_arch = "x86_64")]
+            {
+                #[allow(unsafe_code)]
+                // SAFETY: See the general branch: empty asm aligns LLVM's
+                // optimization behavior with the static-patch path.
+                unsafe {
+                    core::arch::asm!("", options());
+                }
+            }
+        }
+    }};
+
     ($func:expr, $($arg:tt)+) => {{
         #[cfg(feature = "dyndbg")]
         {
@@ -2008,20 +2703,23 @@ macro_rules! dyndbg_debug_func {
                                     "call {emit}",
                                     emit = in(reg) $crate::__dyndbg_label_emit as *const (),
                                     in("rdi") &DESCRIPTOR,
-                                    // rsi = args: delivered via outer asm's
-                                    // callee-saved r12 input (callbr live-in).
+                                    // rsi = args: reloaded from the normal-path
+                                    // stack slot inside the block; no callee-saved
+                                    // register carries it across the site.
                                     in("rsi") __dyndbg_args,
                                     options()
                                 );
                             }
                         },
-                        // The args pointer crosses the site in callee-saved r12
-                        // (survives the runtime call), and clobber_abi models the
-                        // label-block call's register clobbers on the MAIN path:
-                        // LLVM treats asm-goto label blocks as unreachable, so
-                        // without this the rejoin path reused caller-saved
-                        // registers that the runtime call had clobbered.
-                        in("r12") __dyndbg_args,
+                        // clobber_abi models the label-block call's register
+                        // clobbers on the MAIN path: LLVM treats asm-goto label
+                        // blocks as unreachable, so without this the rejoin path
+                        // reused caller-saved registers that the runtime call
+                        // had clobbered.  The args pointer stays in its stack
+                        // slot on the normal path (the inner asm reloads it),
+                        // keeping the disabled NOP5 path free of the extra
+                        // register save/restore a callee-saved carrier would
+                        // cost.
                         clobber_abi("sysv64"),
                         options()
                     );
