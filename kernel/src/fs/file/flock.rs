@@ -161,6 +161,7 @@ impl FlockList {
     /// If the owner is valid, the lock is removed from the list and all threads waiting for the lock are woken.
     /// The function does nothing if the owner is not found in the list.
     /// The function is called when the file is closed or the lock is released.
+    #[inline(never)]
     pub fn unlock(&self, req_owner: &InodeHandle) {
         debug!("unlock with owner: {:?}", req_owner as *const InodeHandle);
         let mut list = self.inner.lock();
