@@ -32,7 +32,7 @@ macro_rules! gen_bench_logs {{
     ($($name:ident => $msg:literal),* $(,)?) => {{
         $(
             #[inline(never)]
-            fn $name() {{
+            pub fn $name() {{
                 aster_logger::dyndbg_debug_site!($msg, $msg);
                 core::hint::black_box(());
             }}
@@ -74,7 +74,7 @@ macro_rules! gen_bench_logs {{
     ($($name:ident => $msg:literal),* $(,)?) => {{
         $(
             #[inline(never)]
-            fn $name() {{
+            pub fn $name() {{
                 aster_logger::dyndbg_debug_site!($msg, $msg);
                 core::hint::black_box(());
             }}
