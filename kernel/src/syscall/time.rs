@@ -6,7 +6,7 @@ use super::SyscallReturn;
 use crate::{prelude::*, time::SystemTime};
 
 pub fn sys_time(tloc: Vaddr, ctx: &Context) -> Result<SyscallReturn> {
-    debug!("tloc = 0x{tloc:x}");
+    debug!("tloc = 0x{:x}", tloc);
 
     let now_as_secs = {
         let now = SystemTime::now();

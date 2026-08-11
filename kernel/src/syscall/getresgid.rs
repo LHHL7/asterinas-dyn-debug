@@ -11,7 +11,7 @@ pub fn sys_getresgid(
     sgid_ptr: Vaddr,
     ctx: &Context,
 ) -> Result<SyscallReturn> {
-    debug!("rgid_ptr = 0x{rgid_ptr:x}, egid_ptr = 0x{egid_ptr:x}, sgid_ptr = 0x{sgid_ptr:x}");
+    debug!("rgid_ptr = 0x{:x}, egid_ptr = 0x{:x}, sgid_ptr = 0x{:x}", rgid_ptr, egid_ptr, sgid_ptr);
 
     let credentials = ctx.posix_thread.credentials();
     let user_space = ctx.user_space();

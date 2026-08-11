@@ -11,7 +11,7 @@ pub fn sys_getresuid(
     suid_ptr: Vaddr,
     ctx: &Context,
 ) -> Result<SyscallReturn> {
-    debug!("ruid_ptr = 0x{ruid_ptr:x}, euid_ptr = 0x{euid_ptr:x}, suid_ptr = 0x{suid_ptr:x}");
+    debug!("ruid_ptr = 0x{:x}, euid_ptr = 0x{:x}, suid_ptr = 0x{:x}", ruid_ptr, euid_ptr, suid_ptr);
 
     let credentials = ctx.posix_thread.credentials();
     let user_space = ctx.user_space();

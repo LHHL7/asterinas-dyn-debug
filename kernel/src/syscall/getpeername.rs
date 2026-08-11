@@ -13,7 +13,7 @@ pub fn sys_getpeername(
     addrlen_ptr: Vaddr,
     ctx: &Context,
 ) -> Result<SyscallReturn> {
-    debug!("sockfd = {sockfd}, addr = 0x{addr:x}, addrlen_ptr = 0x{addrlen_ptr:x}");
+    debug!("sockfd = {}, addr = 0x{:x}, addrlen_ptr = 0x{:x}", sockfd, addr, addrlen_ptr);
 
     let mut file_table = ctx.thread_local.borrow_file_table_mut();
     let file = get_file_fast!(&mut file_table, sockfd);

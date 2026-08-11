@@ -9,7 +9,7 @@ use crate::{
 
 pub fn sys_shutdown(sockfd: FileDesc, how: i32, ctx: &Context) -> Result<SyscallReturn> {
     let shutdown_cmd = SockShutdownCmd::try_from(how)?;
-    debug!("sockfd = {sockfd}, cmd = {shutdown_cmd:?}");
+    debug!("sockfd = {}, cmd = {:?}", sockfd, shutdown_cmd);
 
     let mut file_table = ctx.thread_local.borrow_file_table_mut();
     let file = get_file_fast!(&mut file_table, sockfd);

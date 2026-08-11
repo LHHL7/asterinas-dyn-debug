@@ -14,7 +14,7 @@ pub fn sys_bind(
     ctx: &Context,
 ) -> Result<SyscallReturn> {
     let socket_addr = read_socket_addr_from_user(sockaddr_ptr, addrlen as usize)?;
-    debug!("sockfd = {sockfd}, socket_addr = {socket_addr:?}");
+    debug!("sockfd = {}, socket_addr = {:?}", sockfd, socket_addr);
 
     let mut file_table = ctx.thread_local.borrow_file_table_mut();
     let file = get_file_fast!(&mut file_table, sockfd);

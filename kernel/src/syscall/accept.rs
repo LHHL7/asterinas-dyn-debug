@@ -16,7 +16,7 @@ pub fn sys_accept(
     addrlen_ptr: Vaddr,
     ctx: &Context,
 ) -> Result<SyscallReturn> {
-    debug!("sockfd = {sockfd}, sockaddr_ptr = 0x{sockaddr_ptr:x}, addrlen_ptr = 0x{addrlen_ptr:x}");
+    debug!("sockfd = {}, sockaddr_ptr = 0x{:x}, addrlen_ptr = 0x{:x}", sockfd, sockaddr_ptr, addrlen_ptr);
 
     let fd = do_accept(sockfd, sockaddr_ptr, addrlen_ptr, Flags::empty(), ctx)?;
     Ok(SyscallReturn::Return(fd as _))

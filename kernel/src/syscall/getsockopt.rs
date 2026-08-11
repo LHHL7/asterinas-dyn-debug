@@ -25,7 +25,7 @@ pub fn sys_getsockopt(
     let user_space = ctx.user_space();
     let optlen: u32 = user_space.read_val(optlen_addr)?;
 
-    debug!("level = {level:?}, sockfd = {sockfd}, optname = {optname:?}, optlen = {optlen}");
+    debug!("level = {:?}, sockfd = {}, optname = {:?}, optlen = {}", level, sockfd, optname, optlen);
 
     let mut file_table = ctx.thread_local.borrow_file_table_mut();
     let file = get_file_fast!(&mut file_table, sockfd);
