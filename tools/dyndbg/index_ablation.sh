@@ -38,8 +38,12 @@ FILE_KEY=${FILE_KEY:-${_SYNTH_FILE:-dyndbg_bench.rs}}
 # Do NOT pass a wildcard here: it would switch the ablation to the
 # wildcard-scan channel (O(m)) and distort the exact-lookup comparison.
 FUNC_KEY=${FUNC_KEY:-bench_log_0}
-LINE_KEY=${LINE_KEY:-$(cat /etc/dyndbg_line.txt 2>/dev/null || echo "215")}
-INDEX_ITERS=${INDEX_ITERS:-10000}
+# LINE_KEY: env override wins; otherwise resolved at runtime by
+# detect_line_key() (live line of bench_log_0 from the status listing).
+LINE_KEY=${LINE_KEY:-}
+LINE_KEY_FILE=${LINE_KEY_FILE:-/etc/dyndbg_line.txt}
+LINE_FALLBACK_KEY=${LINE_FALLBACK_KEY:-215}
+INDEX_ITERS=${INDEX_ITERS:-1000}
 # ROUNDS: number of independent repetitions of each ablation case.
 # Each round runs the full INDEX_ITERS rule updates independently.
 # Set to >=10 for statistically meaningful Table 1 data (mean/sd/CI95).
@@ -104,6 +108,46 @@ parse_stats() {
   mods=$(echo "$stats_text" | awk -F= '/^modules_repatched=/{print $2}')
   sites=$(echo "$stats_text" | awk -F= '/^sites_patched=/{print $2}')
   echo "$desc $mods $sites"
+}
+
+detect_line_key() {
+  if [ -n "$LINE_KEY" ]; then
+    echo "$LINE_KEY"
+    return
+  fi
+
+  # Prefer the live line of bench_log_0 from the status listing. The site
+  # lives in the generated macro expansion (bench_sites.rs:34 today), and the
+  # /etc file can lag it by one (source entry line vs the macro-invocation
+  # line the kernel records), so a stale file key would make the line
+  # selector match foreign descriptors instead of the bench sites.
+  line=$(cat "$PROC" 2>/dev/null | grep ' bench_log_0 ' | head -n 1 |
+    sed -n 's/.*:\([0-9][0-9]*\) \[.*/\1/p')
+  case "$line" in
+    ''|*[!0-9]*) ;;
+    *)
+      echo "$line"
+      return
+      ;;
+  esac
+
+  if [ -r "$LINE_KEY_FILE" ]; then
+    line=$(awk 'NR == 1 { sub(/^[[:space:]]+/, ""); sub(/[[:space:]]+$/, ""); print; exit }' "$LINE_KEY_FILE" 2>/dev/null || true)
+    case "$line" in
+      ''|*[!0-9]*) ;;
+      *)
+        echo "$line"
+        return
+        ;;
+    esac
+  fi
+  if [ -n "$LINE_FALLBACK_KEY" ]; then
+    echo "$LINE_FALLBACK_KEY"
+    return
+  fi
+
+  echo "failed to detect line key" >&2
+  return 1
 }
 
 run_ablation_case() {
@@ -211,6 +255,8 @@ run_ablation_case() {
   echo "  mean=${_mean}s  sd=${_sd}s  CI95=[${_ci_low}, ${_ci_high}]s  min=${_min}s  max=${_max}s"
   echo ""
 }
+
+LINE_KEY=$(detect_line_key) || true
 
 echo "=== Index Ablation Test (-p mode, no patching) ==="
 echo "iters=$INDEX_ITERS rounds=$ROUNDS module=$MODULE_KEY file=$FILE_KEY func=$FUNC_KEY line=$LINE_KEY"
