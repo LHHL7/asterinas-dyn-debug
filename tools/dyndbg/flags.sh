@@ -57,13 +57,17 @@ record_case() {
   echo "$RUN_ID,$case_id,$status,$expected,$actual,$details" >> "$CSV_FILE"
 }
 
-# Emit only the log lines produced since the previous dmesg marker.
+# Emit the log lines produced since the previous dmesg marker.
+# `dmesg` (via syslog(3)) is non-consuming: it copies the whole kernel log
+# ring without clearing it, so `dmesg_mark` must use `dmesg -c`
+# (syslog(4) READ_CLEAR) to reset the ring; otherwise every later `dmesg`
+# shows all historical lines again.
 new_log_lines() {
-  dmesg 2>/dev/null | tail -n +"$((DMESG_MARKER + 1))" | grep 'dyndbg bench log' || true
+  dmesg 2>/dev/null | grep 'dyndbg bench log' || true
 }
 
 dmesg_mark() {
-  DMESG_MARKER=$(dmesg 2>/dev/null | wc -l | tr -d ' ')
+  dmesg -c >/dev/null 2>&1 || true
 }
 
 run_with_marker() {
@@ -74,8 +78,8 @@ run_with_marker() {
   new_log_lines
 }
 
-# FL-01: +pfl renders "file:line [module] function <args>"
-lines=$(run_with_marker "module=$MODULE_KEY +pfl")
+# FL-01: +pflm renders "file:line [module] function <args>"
+lines=$(run_with_marker "module=$MODULE_KEY +pflm")
 has_file_line=$(echo "$lines" | grep -c 'dyndbg_bench\.rs:[0-9]' || true)
 has_module=$(echo "$lines" | grep -c '\[.*dyndbg_bench\]' || true)
 has_func=$(echo "$lines" | grep -c 'bench_log .*dyndbg bench log' || true)
@@ -87,7 +91,9 @@ fi
 
 # FL-02: flags-only command (+f) must NOT flip the log switch
 lines=$(run_with_marker "module=$MODULE_KEY +f")
-count=$(echo "$lines" | wc -l | tr -d ' ')
+# `echo "$lines" | wc -l` would count 1 for an empty capture (echo adds a
+# newline); count matched lines instead so an empty result is 0.
+count=$(printf '%s' "$lines" | grep -c '^' || true)
 if [ "$count" -eq 0 ]; then
   record_case "FL-02" pass "no log output with flags-only +f" "lines=$count" "flags-only keeps switch off"
 else
@@ -97,7 +103,7 @@ fi
 # FL-03: -f clears only the function bit (file:line + module remain)
 run_rule "clear"
 dmesg_mark
-run_rule "module=$MODULE_KEY +pfl"
+run_rule "module=$MODULE_KEY +pflm"
 run_rule "module=$MODULE_KEY -f"
 run_bench
 lines=$(new_log_lines)

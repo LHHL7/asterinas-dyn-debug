@@ -5,7 +5,7 @@ use alloc::vec;
 use ostd::mm::{FallibleVmWrite, VmReader, VmWriter};
 
 use crate::{
-    error::Errno,
+    error::{Errno, Error},
     events::IoEvents,
     fs::{
         file::{FileIo, StatusFlags},
@@ -15,6 +15,7 @@ use crate::{
     process::signal::{PollHandle, Pollable},
     return_errno_with_message,
     util::random,
+    util::ReadCString,
 };
 
 pub fn geturandom(writer: &mut VmWriter) -> Result<usize> {
@@ -118,6 +119,22 @@ impl InodeIo for MemFile {
             MemFile::Null => Ok(0),
             MemFile::Random => getrandom(writer),
             MemFile::Urandom => geturandom(writer),
+            MemFile::Kmsg => {
+                // Consume-on-read kernel log ring (the dmesg channel): return
+                // the oldest not-yet-read bytes up to the caller's buffer;
+                // `0` means drained (EOF for a dmesg-style reader).
+                let mut buffer = [0u8; 4096];
+                let n = aster_logger::kmsg::read_into(&mut buffer);
+                if n == 0 {
+                    return Ok(0);
+                }
+                let mut reader = VmReader::from(&buffer[..n]);
+                match writer.write_fallible(&mut reader) {
+                    Ok(len) => Ok(len),
+                    Err((err, 0)) => Err(err.into()),
+                    Err((_, len)) => Ok(len),
+                }
+            }
             _ => return_errno_with_message!(Errno::EINVAL, "read is not supported yet"),
         }
     }
@@ -136,6 +153,18 @@ impl InodeIo for MemFile {
             }
             MemFile::Full => {
                 return_errno_with_message!(Errno::ENOSPC, "no space left on /dev/full")
+            }
+            MemFile::Kmsg => {
+                // `dmesg -c`: writing "clear" empties the log ring.
+                let (command, read_bytes) = reader.read_cstring_until_end(32)?;
+                let command = command
+                    .to_str()
+                    .map_err(|_| Error::with_message(Errno::EINVAL, "command is not valid UTF-8"))?
+                    .trim();
+                if command == "clear" {
+                    aster_logger::kmsg::clear();
+                }
+                Ok(read_bytes)
             }
             _ => return_errno_with_message!(Errno::EINVAL, "write is not supported yet"),
         }

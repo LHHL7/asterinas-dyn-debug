@@ -11,6 +11,8 @@ use core::fmt::Write;
 use aster_console::AnyConsoleDevice;
 use ostd::sync::{LocalIrqDisabled, SpinLockGuard};
 
+use crate::kmsg;
+
 /// Prints the formatted arguments to the standard output.
 pub fn _print(args: fmt::Arguments) {
     // We must call `all_devices_lock` instead of `all_devices` here, as `all_devices` invokes the
@@ -25,6 +27,10 @@ pub fn _print(args: fmt::Arguments) {
     );
     impl Write for Printer<'_> {
         fn write_str(&mut self, s: &str) -> fmt::Result {
+            // Mirror every printed chunk into the kernel log ring so that
+            // `/dev/kmsg` (dmesg) can serve it.  This is a lock-protected
+            // memcpy under the same lock, safe under low memory.
+            kmsg::append(s.as_bytes());
             if self.0.is_empty() {
                 ostd::early_print!("{}", s);
             } else {

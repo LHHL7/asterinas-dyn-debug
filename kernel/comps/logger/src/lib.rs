@@ -22,6 +22,8 @@ mod aster_logger;
 mod console;
 #[allow(unsafe_code)]
 pub mod dyndbg_trace;
+/// Kernel log ring backing `/dev/kmsg` (the dmesg channel).
+pub mod kmsg;
 //对外暴露接口 方便控制接口调用
 pub use aster_logger::{
     append_dyndbg_rule, clear_dyndbg_rule, clear_dyndbg_rules, dyndbg_module_enabled,

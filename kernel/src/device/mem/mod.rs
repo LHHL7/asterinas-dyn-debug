@@ -80,4 +80,5 @@ pub(super) fn init_in_first_kthread() {
     register(Arc::new(MemDevice::new(MemFile::Random))).unwrap();
     register(Arc::new(MemDevice::new(MemFile::Urandom))).unwrap();
     register(Arc::new(MemDevice::new(MemFile::Zero))).unwrap();
+    register(Arc::new(MemDevice::new(MemFile::Kmsg))).unwrap();
 }

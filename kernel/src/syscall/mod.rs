@@ -64,6 +64,7 @@ mod getpgrp;
 mod getpid;
 mod getppid;
 mod getrandom;
+mod syslog;
 mod getresgid;
 mod getresuid;
 mod getrusage;
