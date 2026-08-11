@@ -26,7 +26,6 @@ RUN_FUNCTIONAL=${RUN_FUNCTIONAL:-1}
 RUN_INDEX_ABLATION=${RUN_INDEX_ABLATION:-1}
 RUN_PERF=${RUN_PERF:-1}
 RUN_WORKLOAD=${RUN_WORKLOAD:-1}
-RUN_PATCH_BENCH=${RUN_PATCH_BENCH:-1}
 RUN_TRACE=${RUN_TRACE:-1}
 RUN_FLAGS=${RUN_FLAGS:-1}
 RUN_STATUS=${RUN_STATUS:-1}
@@ -63,10 +62,6 @@ fi
 
 if [ "$RUN_WORKLOAD" -ne 0 ]; then
   run_script "workload" "$SCRIPT_DIR/workload.sh" env WORKLOAD_MODE=static
-fi
-
-if [ "$RUN_PATCH_BENCH" -ne 0 ]; then
-  run_script "patch_bench" "$SCRIPT_DIR/patch_bench.sh"
 fi
 
 # New-feature suites (T/FL/S/M/R + I-03/EQ): same build group as F.
