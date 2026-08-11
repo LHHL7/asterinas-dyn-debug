@@ -46,7 +46,7 @@ check_dmesg() {
     return
   fi
 
-  hits=$(dmesg 2>/dev/null | grep -Ei 'panic|oops|bug' | wc -l | tr -d ' ')
+  hits=$(dmesg 2>/dev/null | grep -Ei '(^|[^A-Za-z])BUG:|oops|panic' | wc -l | tr -d ' ')
   if [ -n "$hits" ]; then
     DMESG_HITS=$hits
   fi
@@ -57,6 +57,10 @@ check_dmesg() {
     DMESG_STATUS=pass
   fi
 }
+
+# Clear the boot log first: dmesg reads the whole kernel ring (non-consuming),
+# so without this the panic check would count startup noise as failures.
+dmesg -c >/dev/null 2>&1 || true
 
 start=$(awk '{print $1}' /proc/uptime)
 
