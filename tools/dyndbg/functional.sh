@@ -99,6 +99,19 @@ detect_line_key() {
     return
   fi
 
+  # Prefer the live line of bench_log_0 from the status listing: the site
+  # lives in the generated macro expansion (bench_sites.rs:34 today), so a
+  # hardcoded line drifts whenever that file changes.
+  line=$(cat "$PROC" 2>/dev/null | grep ' bench_log_0 ' | head -n 1 |
+    sed -n 's/.*:\([0-9][0-9]*\) \[.*/\1/p')
+  case "$line" in
+    ''|*[!0-9]*) ;;
+    *)
+      echo "$line"
+      return
+      ;;
+  esac
+
   if [ -r "$LINE_KEY_FILE" ]; then
     line=$(awk 'NR == 1 { gsub(/[[:space:]]+$/, ""); print; exit }' "$LINE_KEY_FILE" 2>/dev/null || true)
     case "$line" in
