@@ -1,0 +1,54 @@
+@startuml Tracepoint数据通路
+' ============================================================
+' 图: 基于 NOP5 槽的轻量级 Tracepoint —— 数据通路
+' 生产端 (热路径) 在上, 消费端 (控制路径) 在下
+' 数据自上游热路径流入 per-CPU ring, 下游快照收割
+' ============================================================
+
+skinparam backgroundColor #FEFEFE
+skinparam defaultFontName "WenQuanYi Micro Hei"
+
+skinparam package {
+  BackgroundColor<<hot>> #FCE4EC
+  BorderColor<<hot>> #E91E63
+  BackgroundColor<<ctrl>> #E3F2FD
+  BorderColor<<ctrl>> #2196F3
+  FontSize 13
+}
+
+skinparam rectangle {
+  MinimumWidth 180
+  MinimumHeight 30
+  FontSize 12
+}
+
+skinparam arrow {
+  Color #546E7A
+  Thickness 2
+  FontSize 11
+}
+
+title NOP5 槽轻量级 Tracepoint: 生产/消费数据通路
+
+' ============ 生产端 (热路径) ============
+package "【生产端 · 热路径】" as HOT <<hot>> {
+  rectangle "trace 模式调用点\n禁用态零开销" as callsite
+  rectangle "per-CPU ring buffer\n每 CPU 独立 · 无锁" as ring
+  rectangle "热点计数" as hotcount
+}
+
+' ============ 消费端 (控制路径) ============
+package "【消费端 · 控制路径】" as CTRL <<ctrl>> {
+  rectangle "快照收割" as snap
+  rectangle "丢失统计 / TSC 排序" as lost
+  rectangle "top-n 热点" as hot
+}
+
+' ============ 关系 ============
+callsite -down-> ring : "push 事件"
+ring -right-> hotcount : "命中计数"
+ring -down-> snap : "只读收割"
+hotcount -down-> hot : "跨 CPU 聚合"
+snap -down-> lost
+
+@enduml

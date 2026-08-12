@@ -1,0 +1,46 @@
+@startuml 后端宏系统设计
+' ============================================================
+' 图2a: 双后端宏系统设计 (对应 4.4.2)
+' 展示 dyndbg_debug!() 的两个条件编译后端
+' ============================================================
+
+skinparam backgroundColor #FEFEFE
+skinparam defaultFontName "WenQuanYi Micro Hei"
+skinparam linetype ortho
+
+skinparam rectangle {
+  MinimumWidth 160
+  MinimumHeight 50
+  FontSize 13
+}
+
+skinparam arrow {
+  Color #546E7A
+  Thickness 2
+  FontSize 12
+}
+
+skinparam circle {
+  BackgroundColor #FFFFFF
+  BorderColor #546E7A
+  FontSize 1
+}
+
+' ============ 入口 ============
+rectangle "  源码调用  \n  dyndbg_debug!  " as entry #F5F5F5
+
+' ============ 两个后端 ============
+rectangle "  后端一: Static Patch (默认)  \n  feature = "dyndbg"  \n  ──────────────────────  \n  生成:  \n  · 5字节 NOP 内联汇编槽  \n  · 跳转目标标签 (log+trace 双模式块)  \n  · 调用点描述符  \n  · 修补site注册信息 + KEY_MAPPING 绑定  \n  ──────────────────────  \n  运行时:  \n  · 禁用: NOP   \n  · 启用: JMP → 日志 / trace 推送  " as backend_dyndbg #E8F5E9
+
+' 布局说明: 后端二补 3 个空行与后端一等高, 保证分叉中继横线与两端水平对齐
+rectangle "  后端二: Branch Gating  \n  feature = "branchdbg"  \n  ──────────────────────  \n  生成:  \n  · 调用点描述符  \n    ──────────────────────  \n  运行时:  \n  · 软件门控分支判断  \n  · 模块门控 + log/trace 双标志  \n  \n  \n  " as backend_branch #E3F2FD
+
+' ============ 直线分叉 (入口垂直接入, 两端水平引出) ============
+circle " " as fork
+backend_dyndbg -[hidden]left-> fork
+fork -[hidden]left-> backend_branch
+entry -down-> fork
+fork -right-> backend_dyndbg : "默认"
+fork -left-> backend_branch : "可选"
+
+@enduml

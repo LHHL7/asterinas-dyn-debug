@@ -1,0 +1,86 @@
+<mxfile host="app.diagrams.net" modified="2026-08-12T00:00:00.000Z" agent="5.0" etag="drawio" version="24.0.0" type="device">
+  <diagram name="StaticKey通用化" id="statickey-general">
+    <mxGraphModel dx="1400" dy="1000" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1200" pageHeight="700" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <!-- 主标题 -->
+        <mxCell id="title" value="StaticKey 通用化：零开销静态分支原语与两类消费者" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=15;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="200" y="20" width="800" height="40" as="geometry"/>
+        </mxCell>
+
+        <!-- ========== 第一行：宏层 ========== -->
+        <mxCell id="pkg_macro" value="" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#E8F0F2;strokeColor=#264653;strokeWidth=1.2;" vertex="1" parent="1">
+          <mxGeometry x="60" y="100" width="240" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="label_macro" value="&lt;b&gt;宏层&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;fontSize=12;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="65" y="102" width="100" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="sk_macro" value="static_key_branch!" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#264653;strokeWidth=1;fontSize=11;align=center;" vertex="1" parent="pkg_macro">
+          <mxGeometry x="40" y="40" width="160" height="40" as="geometry"/>
+        </mxCell>
+
+        <!-- ========== 通用 StaticKey 原语层 ========== -->
+        <mxCell id="pkg_prim" value="" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#E8F0F2;strokeColor=#264653;strokeWidth=1.2;" vertex="1" parent="1">
+          <mxGeometry x="340" y="100" width="360" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="label_prim" value="&lt;b&gt;通用 StaticKey 原语层&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;fontSize=12;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="345" y="102" width="180" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="site" value="StaticKeySite&#xa;禁用 NOP5 · 启用 JMP" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#264653;strokeWidth=1;fontSize=11;align=center;" vertex="1" parent="pkg_prim">
+          <mxGeometry x="20" y="30" width="145" height="45" as="geometry"/>
+        </mxCell>
+        <mxCell id="reg" value="站点注册表" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#264653;strokeWidth=1;fontSize=11;align=center;" vertex="1" parent="pkg_prim">
+          <mxGeometry x="175" y="30" width="145" height="45" as="geometry"/>
+        </mxCell>
+        <mxCell id="ops" value="批量启停" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#264653;strokeWidth=1;fontSize=11;align=center;" vertex="1" parent="pkg_prim">
+          <mxGeometry x="95" y="82" width="170" height="32" as="geometry"/>
+        </mxCell>
+
+        <!-- ========== SMP 安全修补层 ========== -->
+        <mxCell id="pkg_smp" value="" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#EDF4EE;strokeColor=#2A9D8F;strokeWidth=1.2;" vertex="1" parent="1">
+          <mxGeometry x="740" y="100" width="240" height="120" as="geometry"/>
+        </mxCell>
+        <mxCell id="label_smp" value="&lt;b&gt;SMP 安全修补层&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;fontSize=12;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="745" y="102" width="140" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="patch" value="指令槽批量修补" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#264653;strokeWidth=1;fontSize=11;align=center;" vertex="1" parent="pkg_smp">
+          <mxGeometry x="40" y="40" width="160" height="40" as="geometry"/>
+        </mxCell>
+
+        <!-- ========== 消费者 ========== -->
+        <mxCell id="pkg_consumer" value="" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFF7E8;strokeColor=#E76F51;strokeWidth=1.2;" vertex="1" parent="1">
+          <mxGeometry x="340" y="300" width="360" height="130" as="geometry"/>
+        </mxCell>
+        <mxCell id="label_consumer" value="&lt;b&gt;消费者&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;fontSize=12;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="345" y="302" width="100" height="20" as="geometry"/>
+        </mxCell>
+        <mxCell id="consumer_dyndbg" value="dyndbg&#xa;调试调用点" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#264653;strokeWidth=1;fontSize=11;align=center;" vertex="1" parent="pkg_consumer">
+          <mxGeometry x="30" y="30" width="130" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="consumer_sched" value="sched_trace&#xa;调度追踪站点" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#264653;strokeWidth=1;fontSize=11;align=center;" vertex="1" parent="pkg_consumer">
+          <mxGeometry x="200" y="30" width="130" height="50" as="geometry"/>
+        </mxCell>
+
+        <!-- 箭头全部改为虚线 dashed=1 -->
+        <mxCell id="arrow1" value="编译时注册" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=12;html=1;strokeColor=#264653;strokeWidth=1.4;dashed=1;endArrow=classic;endFill=1;fontSize=10;" edge="1" parent="1" source="sk_macro" target="reg">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="arrow2" value="NOP5 ↔ JMP" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=12;html=1;strokeColor=#264653;strokeWidth=1.4;dashed=1;endArrow=classic;endFill=1;fontSize=10;" edge="1" parent="1" source="ops" target="patch">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="arrow3" value="模块级启停" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=12;html=1;strokeColor=#264653;strokeWidth=1.4;dashed=1;endArrow=classic;endFill=1;fontSize=10;" edge="1" parent="1" source="consumer_dyndbg" target="ops">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="arrow4" value="按 tag 启停" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=12;html=1;strokeColor=#264653;strokeWidth=1.4;dashed=1;endArrow=classic;endFill=1;fontSize=10;" edge="1" parent="1" source="consumer_sched" target="ops">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

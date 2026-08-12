@@ -2,10 +2,18 @@
 ' ============================================================
 ' 图1: Asterinas Dynamic Debug 系统整体分层架构
 ' 5层: 宏层 → 静态注册层 → 修补层/过滤引擎 → 接口层
+
+' 现在1用户层：规则管理 性能基准 状态观测 trace观测  热点统计
+'  2运行过滤层：规则链 三通道索引 增量刷新与重算
+'  3静态修补层：模块门控 指令槽管理 SMP安全
+'  4 静态注册层：描述符注册 站点注册
+'  5宏层： 调用点宏 后端选择
 ' ============================================================
 
 skinparam backgroundColor #FEFEFE
 skinparam defaultFontName "WenQuanYi Micro Hei"
+skinparam nodesep 12
+skinparam ranksep 30
 
 skinparam package {
   BackgroundColor<<compile>> #E8F5E9
@@ -27,55 +35,53 @@ skinparam arrow {
 
 title Asterinas Dynamic Debug 系统整体分层架构
 
-' ==================================================================
-' 上半部分: 运行时引擎
-' ==================================================================
-package "【运行时引擎】" as RUNTIME <<runtime>> {
-
-  package "用户接口层" as IFACE #F3E5F5 {
-    rectangle "规则管理\n控制 dyndbg 启用/禁用" as dd
-    rectangle "性能基准\n触发压测并收集结果" as bench
-    rectangle "统计观测\n暴露内部运行指标" as stats
-  }
-
-  package "运行时过滤引擎" as FILTER #FCE4EC {
-    rectangle "规则链\n规则匹配与冲突裁决" as rules
-    rectangle "多维索引\n加速候选描述符查找" as index
-    rectangle "模块级门控\n快速跳过禁用模块" as modstate
-    rectangle "增量重算\n仅重算受影响的站点" as refresh
-  }
-
-  package "静态指令修补层" as PATCH #FFF3E0 {
-    rectangle "指令槽管理\n运行时替换 NOP ↔ JMP" as slot
-    rectangle "SMP 安全\n多核并发修补同步" as smp
-  }
-
-  IFACE -down-> FILTER : "规则读写"
-  FILTER -down-> PATCH : "触发修补"
+package "【用户接口层】" as IFACE <<runtime>> #F3E5F5 {
+  rectangle "规则管理" as dd
+  rectangle "性能基准" as bench
+  rectangle "状态观测" as status
+  rectangle "trace观测" as trace
+  rectangle "热点统计" as hot
 }
 
-' ==================================================================
-' 下半部分: 编译时基础设施
-' ==================================================================
-package "【编译时基础设施】" as COMPILE <<compile>> {
-
-  package "静态注册层" as REGISTRY #E3F2FD {
-    rectangle "描述符注册表\n所有调用点的元数据集合" as desc_reg
-    rectangle "站点注册表\n指令地址与跳转目标集合" as site_reg
-  }
-
-  package "宏层" as MACRO #E8F5E9 {
-    rectangle "调用点宏\n为每个调试调用生成站点" as macros
-    rectangle "后端选择\n静态修补 / 软件分支" as backends
-  }
-
-  MACRO -up-> REGISTRY : "编译时分散定义\n链接时合并为静态切片"
+package "【运行时过滤引擎】" as FILTER <<runtime>> #FCE4EC {
+  rectangle "规则链" as rules
+  rectangle "三通道索引" as index
+  rectangle "增量刷新与重算" as refresh
 }
 
-' ==================================================================
-' 注册层 → 运行时的启动时绑定
-' ==================================================================
-REGISTRY -up-> FILTER : "启动时\n构建索引"
-REGISTRY -up-> PATCH : "启动时\n构建模块视图"
+package "【静态指令修补层】" as PATCH <<runtime>> #FFF3E0 {
+  rectangle "模块门控" as modstate
+  rectangle "指令槽管理" as slot
+  rectangle "SMP安全" as smp
+}
+
+package "【静态注册层】" as REGISTRY <<compile>> #E3F2FD {
+  rectangle "描述符注册" as desc_reg
+  rectangle "站点注册" as site_reg
+}
+
+package "【宏层】" as MACRO <<compile>> #E8F5E9 {
+  rectangle "调用点宏" as macros
+  rectangle "后端选择" as backends
+}
+
+' ===== 同层块强制同行 (hidden 约束, 防折行) =====
+dd -[hidden]right-> bench
+bench -[hidden]right-> status
+status -[hidden]right-> trace
+trace -[hidden]right-> hot
+rules -[hidden]right-> index
+index -[hidden]right-> refresh
+modstate -[hidden]right-> slot
+slot -[hidden]right-> smp
+desc_reg -[hidden]right-> site_reg
+macros -[hidden]right-> backends
+
+' ===== 层间关系 =====
+IFACE -down-> FILTER : "规则读写"
+FILTER -down-> PATCH : "触发修补"
+MACRO -up-> REGISTRY : "编译时分散定义\n链接时合并为静态切片"
+REGISTRY -up-> FILTER : "启动时构建索引"
+REGISTRY -up-> PATCH : "启动时构建站点视图与门控状态"
 
 @enduml

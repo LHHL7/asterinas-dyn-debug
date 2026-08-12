@@ -1,0 +1,59 @@
+@startuml 三通道匹配引擎
+' ============================================================
+' 图: 三通道匹配引擎
+' 通道1: 完整值精确 → 主索引 O(log N)
+' 通道2: 段精确 (短名/多段交集) → 段倒排索引 O(k·log N)
+' 通道3: 通配符 (*/?) → 主索引键扫描 O(m)
+' function 维度无段概念: 精确 → 通配符 两通道
+' ============================================================
+
+skinparam backgroundColor #FEFEFE
+skinparam defaultFontName "WenQuanYi Micro Hei"
+
+skinparam activity {
+  BackgroundColor #E3F2FD
+  BorderColor #2196F3
+  StartColor #4CAF50
+  EndColor #F44336
+  BarColor #FF9800
+  FontSize 11
+}
+
+title 三通道候选收集 (module/file 维度)
+
+start
+: 规则 selector 的匹配关键字\n(如 module=ext2::dir);
+
+if (含通配符 * / ? ?) then (是)
+  #FFF3E0:<b>通道 3: 通配符扫描</b>\n遍历主索引键逐一匹配\nO(m) 全键扫描;
+else (否)
+endif
+
+' ──── 通道1 ────
+: <b>通道 1: 完整值精确</b>\n主索引精确查找\nO(log N);
+
+if (命中?) then (是)
+  #E8F5E9:<b>返回精确命中</b>;
+  stop
+else (未命中)
+endif
+
+' ──── 通道2 ────
+: <b>通道 2: 段精确</b>\n关键字拆段\n(如 ext2::dir → [ext2, dir]);
+
+note right
+  段倒排索引: 每段 → 站点列表
+  多段逐段查表后取交集
+  O(k · log N), k = 段数
+end note
+
+if (某段不在倒排表?) then (是)
+  #FFCDD2:<b>无任何站点含该段</b>\n返回空集;
+  stop
+else (全部段命中)
+  : 逐段查段倒排索引\n取交集合并结果;
+  #E8F5E9:<b>返回交集结果</b>;
+  stop
+endif
+
+@enduml

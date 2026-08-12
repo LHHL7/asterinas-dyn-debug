@@ -1,0 +1,74 @@
+@startuml StaticKey通用化
+' ============================================================
+' 图: StaticKey 通用化
+' 补丁层与使用方解耦: 通用 NOP5↔JMP 原语, 两类消费者
+' ============================================================
+
+skinparam backgroundColor #FFFFFF
+skinparam defaultFontName "WenQuanYi Micro Hei"
+skinparam dpi 300
+skinparam handwritten false
+
+skinparam package {
+  BackgroundColor<<sk>> #E8F0F2
+  BorderColor<<sk>> #264653
+  BackgroundColor<<consumer>> #FFF7E8
+  BorderColor<<consumer>> #E76F51
+  BackgroundColor<<patch>> #EDF4EE
+  BorderColor<<patch>> #2A9D8F
+  FontSize 12
+  BorderThickness 1.2
+}
+
+skinparam rectangle {
+  MinimumWidth 160
+  MinimumHeight 32
+  FontSize 11
+  BackgroundColor #FFFFFF
+  BorderColor #264653
+  BorderThickness 1.0
+}
+
+skinparam arrow {
+  Color #264653
+  Thickness 1.5
+  FontSize 10
+}
+
+skinparam title {
+  FontSize 14
+  FontStyle bold
+}
+
+title StaticKey 通用化: 零开销静态分支原语与两类消费者
+
+' ============ 宏层 ============
+package "【宏层】" as MACRO <<sk>> {
+  rectangle "static_key_branch!" as sk_macro
+}
+
+' ============ 原语层 ============
+package "【通用 StaticKey 原语层】" as PRIM <<sk>> {
+  rectangle "StaticKeySite\n禁用 NOP5 · 启用 JMP" as site
+  rectangle "站点注册表" as reg
+  rectangle "批量启停" as ops
+}
+
+' ============ 修补层 ============
+package "【SMP 安全修补】" as SMP <<patch>> {
+  rectangle "指令槽批量修补" as patch
+}
+
+' ============ 消费者 ============
+package "【消费者】" as CONSUMER <<consumer>> {
+  rectangle "dyndbg\n调试调用点" as consumer_dyndbg
+  rectangle "sched_trace\n调度追踪站点" as consumer_sched
+}
+
+' ============ 关系 ============
+sk_macro -down-> reg : "编译时注册"
+ops -down-> patch : "NOP5 ↔ JMP"
+consumer_dyndbg -up-> ops : "模块级启停"
+consumer_sched -up-> ops : "按 tag 启停"
+
+@enduml

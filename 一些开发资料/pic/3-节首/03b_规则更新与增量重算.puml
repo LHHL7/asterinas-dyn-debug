@@ -2,6 +2,11 @@
 ' ============================================================
 ' 图3b: 规则更新与增量重算流程 (对应 X.3.2 + X.3.3)
 ' 从用户命令到触发修补的完整控制路径 (不展开SMP细节)
+'
+' 两条路径:
+'   - append 追加规则 → 三通道候选收集 → 增量刷新 (不重跑规则链)
+'   - del/clear 删除/清空 → 全量重算 (重放整条规则链)
+' 描述符状态: log / trace 两个独立维度 + format flags (+f/+l/+m/+t)
 ' ============================================================
 
 skinparam backgroundColor #FEFEFE
@@ -23,68 +28,81 @@ end box
 
 box "过滤引擎" #FCE4EC
   participant "规则追加" as Append
-  participant "多维索引" as Index
+  participant "三通道索引" as Index
   participant "规则链" as RuleChain
-  participant "增量重算" as Refresh
+  participant "增量刷新 / 全量重算" as Refresh
   participant "MODULE_STATES" as ModState
 end box
 
 box "修补层 " #FFF3E0
-  participant "模块修补" as Patch
+  participant "模块修补\nStaticKey 批量修补" as Patch
 end box
 
 box "描述符层" #E8F5E9
   participant "DebugDescriptor" as Desc
 end box
 
-User -> ProcFS : echo "module=mm +p"
+User -> ProcFS : echo "module=mm +trace" | "+pfl" | "del 0"
 activate ProcFS
 
-ProcFS -> ProcFS : 解析命令\nselector + action
+ProcFS -> ProcFS : 解析命令\nselector + action + flags
 
-ProcFS -> Append : append_dyndbg_rule()
-activate Append
+alt 删除/清空 (del <id> | clear) → 全量重算
+  ProcFS -> Refresh : remove/clear → 全量重算
+  activate Refresh
+  note over Refresh : 重放整条规则链\n(last-match-wins, log/trace 双维度\n+ flags 顺序模拟)
+  Refresh -> Desc : 更新 log/trace 双标志 + format_flags
+  Refresh -> ModState : 更新 enabled_count\n0↔1 翻转 → 触发修补
+  Refresh --> ProcFS : 完成
+  deactivate Refresh
 
-Append -> Index : 候选收集
-activate Index
-Index --> Append : 受影响的描述符集合
-deactivate Index
+else 追加规则 (append) → 增量刷新
+  ProcFS -> Append : append_dyndbg_rule()
+  activate Append
 
-Append -> RuleChain : 追加规则条目
-Append -> Refresh : 增量重算
-activate Refresh
+  Append -> Index : 三通道候选收集\n精确 → 段精确 → 通配符
+  activate Index
+  Index --> Append : 命中描述符集合
+  deactivate Index
 
-== 阶段1: 裁决 ==
+  Append -> RuleChain : 追加规则条目 (链尾必胜)
+  Append -> Refresh : 增量刷新 (不重跑规则链)
+  activate Refresh
 
-loop 每个候选描述符
-  Refresh -> Refresh : 规则链遍历 (last-match-wins)
+  == 阶段1: 增量裁决 ==
 
-  alt 状态发生改变
-    Refresh -> Desc : 翻转 enabled 标志
-    Refresh -> Refresh : 记录模块级增量
+  loop 每个命中描述符
+    Refresh -> Refresh : 增量应用新规则\nlog/trace 各自独立, 其余维度保持
+    Refresh -> Refresh : flags 尾部操作\nset → clear → override
+
+    alt 状态发生改变
+      Refresh -> Desc : 翻转 log/trace 标志\n写入 format_flags
+      Refresh -> Refresh : 记录模块级 delta
+    end
   end
+
+  == 阶段2: 增量应用 ==
+
+  loop 每个受影响的模块
+    Refresh -> ModState : 更新 enabled_count
+    activate ModState
+
+    alt 模块启用状态 0↔1 翻转
+      ModState -> Patch : 触发模块级修补\n(NOP5 ↔ JMP)
+      activate Patch
+      Patch --> ModState : 完成
+      deactivate Patch
+    end
+    ModState --> Refresh : 完成
+    deactivate ModState
+  end
+
+  Refresh --> Append : 完成
+  deactivate Refresh
+  Append --> ProcFS : 返回
+  deactivate Append
 end
 
-== 阶段2: 增量应用 ==
-
-loop 每个受影响的模块
-  Refresh -> ModState : 更新 enabled_count
-  activate ModState
-
-  alt 模块启用状态 0↔1 翻转
-    ModState -> Patch : 触发模块级修补
-    activate Patch
-    Patch --> ModState : 完成
-    deactivate Patch
-  end
-  ModState --> Refresh : 完成
-  deactivate ModState
-end
-
-Refresh --> Append : 完成
-deactivate Refresh
-Append --> ProcFS : 返回
-deactivate Append
 ProcFS --> User : 完成
 deactivate ProcFS
 

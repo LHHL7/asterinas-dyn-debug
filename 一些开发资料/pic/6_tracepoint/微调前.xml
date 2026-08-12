@@ -1,0 +1,73 @@
+<mxfile host="app.diagrams.net" modified="2026-08-12T00:00:00.000Z" agent="5.0" etag="drawio" version="24.0.0" type="device">
+  <diagram name="Tracepoint数据通路" id="tracepoint-data-path">
+    <mxGraphModel dx="1400" dy="1000" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="950" pageHeight="720" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <!-- 主标题 -->
+        <mxCell id="title" value="NOP5 槽轻量级 Tracepoint：生产/消费数据通路" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=15;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="120" y="20" width="700" height="40" as="geometry"/>
+        </mxCell>
+
+        <!-- ========== 生产端 · 热路径 学术低饱和灰框 rounded=1 ========== -->
+        <mxCell id="pkg_hot" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#424242;strokeWidth=1.2;" vertex="1" parent="1">
+          <mxGeometry x="60" y="90" width="340" height="220" as="geometry"/>
+        </mxCell>
+        <mxCell id="label_hot" value="&lt;b&gt;生产端 · 热路径&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;fontSize=13;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="68" y="93" width="160" height="22" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="callsite" value="trace 模式调用点&#xa;禁用态零开销" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#424242;strokeWidth=1;fontSize=12;align=center;" vertex="1" parent="pkg_hot">
+          <mxGeometry x="40" y="40" width="260" height="55" as="geometry"/>
+        </mxCell>
+        <mxCell id="ring" value="per‑CPU ring buffer&#xa;每 CPU 独立 · 无锁" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#424242;strokeWidth=1;fontSize=12;align=center;" vertex="1" parent="pkg_hot">
+          <mxGeometry x="40" y="110" width="260" height="55" as="geometry"/>
+        </mxCell>
+        <mxCell id="hotcount" value="热点计数" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#424242;strokeWidth=1;fontSize=12;align=center;" vertex="1" parent="pkg_hot">
+          <mxGeometry x="40" y="175" width="260" height="40" as="geometry"/>
+        </mxCell>
+
+        <!-- ========== 消费端 · 控制路径 学术低饱和灰框 rounded=1 ========== -->
+        <mxCell id="pkg_ctrl" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#424242;strokeWidth=1.2;" vertex="1" parent="1">
+          <mxGeometry x="540" y="90" width="340" height="220" as="geometry"/>
+        </mxCell>
+        <mxCell id="label_ctrl" value="&lt;b&gt;消费端 · 控制路径&lt;/b&gt;" style="text;html=1;strokeColor=none;fillColor=none;align=left;fontSize=13;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="548" y="93" width="160" height="22" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="snap" value="快照收割" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#424242;strokeWidth=1;fontSize=12;align=center;" vertex="1" parent="pkg_ctrl">
+          <mxGeometry x="40" y="40" width="260" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="lost" value="丢失统计 / TSC 排序" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#424242;strokeWidth=1;fontSize=12;align=center;" vertex="1" parent="pkg_ctrl">
+          <mxGeometry x="40" y="95" width="260" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="hot" value="top‑n 热点" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#424242;strokeWidth=1;fontSize=12;align=center;" vertex="1" parent="pkg_ctrl">
+          <mxGeometry x="40" y="150" width="260" height="40" as="geometry"/>
+        </mxCell>
+
+        <!-- 虚线箭头，大拐点，所有标签完全可见，无挤压；全部深灰线条学术风 -->
+        <mxCell id="arrow1" value="push 事件" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=24;html=1;strokeColor=#424242;strokeWidth=1.8;dashed=1;endArrow=classic;endFill=1;fontSize=11;" edge="1" parent="1" source="callsite" target="ring">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="arrow2" value="命中计数" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=24;html=1;strokeColor=#424242;strokeWidth=1.8;dashed=1;endArrow=classic;endFill=1;fontSize=11;" edge="1" parent="1" source="ring" target="hotcount">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="arrow3" value="只读收割" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=24;html=1;strokeColor=#424242;strokeWidth=1.8;dashed=1;endArrow=classic;endFill=1;fontSize=11;" edge="1" parent="1" source="ring" target="snap">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="arrow4" value="跨 CPU 聚合" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=24;html=1;strokeColor=#424242;strokeWidth=1.8;dashed=1;endArrow=classic;endFill=1;fontSize=11;" edge="1" parent="1" source="hotcount" target="hot">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="arrow5" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=24;html=1;strokeColor=#424242;strokeWidth=1.8;dashed=1;endArrow=classic;endFill=1;fontSize=11;" edge="1" parent="1" source="snap" target="lost">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
