@@ -1,0 +1,8 @@
+run_id,case,status,expected,actual,details
+20260811_070137,S-01,pass,rules=0 all -p descriptors=283,rules=0 desc=283 lines=283 enabled=0,clear
+20260811_070137,S-02,pass,rules=2 with indices,rules=2 rule_lines=2,chain;listing
+20260811_070137,S-03,pass,all 65 dyndbg_bench sites +p,total=65 enabled=65,state;column;+p
+20260811_070137,S-04,pass,all 65 sites +trace,total=65 traced=65,state;column;+trace
+20260811_070137,S-05,pass,after del 0: rules=1, replay resets to default -p,rules=1 enabled=0 total=65,del
+20260811_070137,S-06,pass,del -p flips state back to +p,disabled=283 enabled=65 total=65 desc=283,del;state;update
+20260811_070137,S-07,pass,all sites -p after clear,enabled=0,clear;state;reset

@@ -1,2 +1,11 @@
-run_id,case,full_desc,module_desc,full_mods,module_mods,full_sites,module_sites,full_latency_us,module_latency_us,incremental_status,patch_reduction_status
-20260610_112212,I-01,283,65,153,2,283,65,2469,276,pass,pass
+run_id,case,chain_len,append_desc,del_desc,append_lat_avg_us,del_lat_avg_us,full_desc,full_lat_us,status,details
+20260811_070137,EQ-01,-,-,-,-,-,-,-,pass,last-match-wins on append
+20260811_070137,EQ-02,-,-,-,-,-,-,-,pass,flags-only keeps switch
+20260811_070137,EQ-03,-,-,-,-,-,-,-,pass,del restores +p
+20260811_070137,EQ-04,-,-,-,-,-,-,-,pass,incremental == full state
+20260811_070137,I-03,1,65,65,2,17,283,65,pass,append flat (k=65 recomputed, lat=2) del grows (lat=17)
+20260811_070137,I-03,10,65,65,2,118,283,65,pass,append flat (k=65 recomputed, lat=2) del grows (lat=118)
+20260811_070137,I-03,100,65,65,2,1158,283,65,pass,append flat (k=65 recomputed, lat=2) del grows (lat=1158)
+20260811_070137,I-03,1000,65,65,3,11749,283,65,pass,append flat (k=65 recomputed, lat=3) del grows (lat=11749)
+20260811_070137,I-03,5000,65,65,2,58363,283,65,pass,append flat (k=65 recomputed, lat=2) del grows (lat=58363)
+20260811_070137,I-03-trend,-,-,-,17,58363,283,65,pass,del latency grows with chain length

@@ -1,0 +1,9 @@
+run_id,case,status,expected,actual,details
+20260811_070137,FL-01,pass,file:line [module] function prefix,fl=3 m=3 f=3,+pfl
+20260811_070137,FL-02,pass,no log output with flags-only +f,lines=0,flags-only;keeps;switch;off
+20260811_070137,FL-03,pass,-f clears function bit only,fl=3 m=3 f=0,+pfl;then;-f
+20260811_070137,FL-04,pass,=fl overwrites to func+line,f=3 m=0,+pflm;then;=fl
+20260811_070137,FL-05,pass,+_ clears all flags,prefix=0 plain=3,+pfl;then;+_
+20260811_070137,FL-06,pass,[task=0x...] prefix,task=3,+pt
+20260811_070137,FL-07,pass,flags accumulate (fl then +m),all=3,multi-rule;flags
+20260811_070137,FL-08,pass,bare message with flags==0,prefix=0 plain=3,+p;no;flags

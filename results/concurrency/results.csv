@@ -1,2 +1,2 @@
 run_id,case,toggle_iters,log_iters,bench_mode,duration_us,dmesg_status,dmesg_hits,expected_outcome,actual_outcome,status
-20260619_065517,C-01,5000,50000,log,11854,pass,0,no_panic,pass,pass
+20260811_083221,C-01,5000,50000,log,227,pass,0,no_panic,pass,pass

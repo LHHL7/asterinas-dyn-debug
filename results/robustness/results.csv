@@ -1,0 +1,7 @@
+run_id,case,status,expected,actual,details
+20260811_070137,R-01,pass,rules unchanged after invalid actions,before=0 after=0,invalid;actions
+20260811_070137,R-02,pass,rules unchanged after invalid flags,before=0 after=0,invalid;flags
+20260811_070137,R-03,pass,rules unchanged after invalid del,before=1 after=1,invalid;del
+20260811_070137,R-04,pass,rules unchanged after overlong cmd,before=1 after=1,overlong
+20260811_070137,R-05,pass,rules unchanged after empty cmd,before=1 after=1,empty
+20260811_070137,R-06,pass,valid rule still works after errors,dur=146374 base=0,post-error;health

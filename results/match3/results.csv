@@ -1,0 +1,9 @@
+run_id,case,status,expected,actual,details
+20260811_070137,M-01,pass,exact module excludes bench_log,log=0 batch=1,module=dyndbg_bench::bench_sites
+20260811_070137,M-02,pass,ancestor segment hits all,log=1 batch=1,module=dyndbg_bench
+20260811_070137,M-03,pass,file segment hits bench_sites only,log=0 batch=1,file=bench_sites.rs
+20260811_070137,M-04,pass,wildcard matches,log=1,module=*ndbg*
+20260811_070137,M-05,pass,no substring match (behavior change),m=0/0 f=0/0,module=ndbg;file=ench_sites
+20260811_070137,M-06,pass,func atomic: short-name exact, wildcard hit, partial miss,exact=1 partial=0 wild=1,func;semantics
+20260811_070137,M-07,pass,index on/off candidate sets equal,m=65/65 f=64/64 w=65/65,index;equivalence
+20260811_070137,M-08,pass,AND narrows to bench_sites,log=0 batch=1,module+file;AND

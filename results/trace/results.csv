@@ -1,0 +1,12 @@
+run_id,case,status,expected,actual,details
+20260811_070137,T-01,pass,events=1000 site=dyndbg_bench,events=1000 lines=1000,trace;enabled
+20260811_070137,T-02,pass,events=0,events=0,trace;disabled
+20260811_070137,T-03,pass,log=disabled trace=events=1000,dur=32 base=1 events=1000,log/trace;dims;independent
+20260811_070137,T-03b,pass,events=0 with +p only,events=0,+p;does;not;trace
+20260811_070137,T-04,pass,events=0 lost=0 after reset,events=0 lost=0,reset
+20260811_070137,T-05,pass,lost>0 events=1000000,events=1000000 lost=998976 snap_lost=998976,ring;overflow;loss;stats
+20260811_070137,T-06,pass,events=1000 cpu=valid,events=1000 bad_cpu=0,per-CPU;attribution
+20260811_070137,H-01,pass,top1=dyndbg_bench.rs count>=10000,top1=13000 foreign=0,hotspot;ranking
+20260811_070137,H-02,pass,hotspot==events==1000,hot=1000 events=1000,hotspot/trace;consistency
+20260811_070137,H-03,pass,no hotspot lines after reset,lines=0,hotspot;reset
+20260811_070137,H-04,pass,top-10 filled by log_batch,lines=10,multi-site;hotspots
