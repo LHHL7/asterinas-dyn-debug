@@ -43,7 +43,7 @@
 ### 1.3 核心贡献
 
 - **禁用态零开销**：x86_64下通过编译期预埋NOP5指令槽 + 运行时静态指令修补，禁用态热路径单指令穿透（~0.95ns/调用点），与无调试代码基线不可区分。
-- **批量修补与模块门控**：模块级原子门控将多次站点级状态波动收敛为至多一次指令修补，实测模块修补次数降低98.7%、更新延迟降低8.9×。
+- **批量修补与模块门控**：模块级原子门控将多次站点级状态波动收敛为至多一次指令修补，SMP 事务次数降低 5000×、总耗时降低 24%；增量刷新（append）恒定 ~2µs 与规则链长度无关。
 - **双后端跨架构自适应**：static后端（x86_64 NOP5静态修补）与branchdbg后端（纯运行时分支判断）通过条件编译自动选择，非x86架构自动回退保留全部功能。
 - **自包含消融实验框架**：procfs接口支持运行时热切换修补后端与索引策略，无需重编译即可量化各优化技术的独立收益。
 
@@ -62,8 +62,8 @@
 见[项目展示汇报](最终开发材料汇总/项目展示汇报.pptx)
 
 ### 2.4 演示视频
-通过网盘分享的文件：项目演示视频.mp4
-链接: [https://pan.baidu.com/s/1lhWoEm3SvYicdvor0rQhTg](https://pan.baidu.com/s/1lhWoEm3SvYicdvor0rQhTg) 提取码: lh77
+通过网盘分享的文件：项目演示视频
+链接: [https://pan.baidu.com/s/1SzLmGrRGaG61T9AqdveP2g](https://pan.baidu.com/s/1SzLmGrRGaG61T9AqdveP2g) 提取码: lh77
 
 ### 2.5 AI工具使用记录
 见[ai工具使用记录](最终开发材料汇总/AI工具使用记录.md)
@@ -78,8 +78,8 @@
 
 | 层次 | 职责 | 核心组件 |
 |------|------|----------|
-| **第1层 · 用户接口** | procfs三文件虚拟接口：规则管理、统计观测、性能基准 | `dynamic_debug` / `dyndbg_stats` / `dyndbg_bench` |
-| **第2层 · 运行时过滤引擎** | 四维BTreeMap索引、last-match-wins规则链、增量重算、模块门控 | `DyndbgState` 单例 |
+| **第1层 · 用户接口** | procfs五文件虚拟接口：规则管理、统计观测、追踪观测、热点统计、性能基准 | `dynamic_debug` / `dyndbg_stats` / `dyndbg_trace` / `dyndbg_hotspots` / `dyndbg_bench` |
+| **第2层 · 运行时过滤引擎** | 四维三通道索引（含段倒排）、last-match-wins规则链、增量刷新、模块门控 | `DyndbgState` 单例 |
 | **第3层 · 静态指令修补** | x86_64 NOP5↔JMP rel32批量修补、SMP安全事务 | `patch.rs` + PatchRendezvous协议 |
 | **第4层 · 静态注册** | linkme分布式切片聚合，启动时一次性构建索引 | `#[distributed_slice]` |
 | **第5层 · 宏层** | 双后端宏系统，编译期生成描述符与5字节指令槽 | `dyndbg_debug!` 宏 |
@@ -97,15 +97,17 @@
 
 ### 4.1 用户接口层
 
-通过 procfs 暴露三个虚拟文件，实现"读写即操作"的 shell 交互：
+通过 procfs 暴露五个虚拟文件，实现"读写即操作"的 shell 交互：
 
 | 接口文件 | 功能 | 示例 |
 |----------|------|------|
-| `dynamic_debug` | 规则管理（追加/删除/清空） | `echo "module=ext2 file=inode.rs func=read +p" > .../dynamic_debug` |
+| `dynamic_debug` | 规则管理（追加/删除/清空）+ 状态查看 | `echo "module=ext2 file=inode.rs func=read +pfl" > .../dynamic_debug`；`cat` 查看规则链与全部调试点状态 |
 | `dyndbg_stats` | 统计观测（5个AtomicU64计数器） | `cat .../dyndbg_stats` |
-| `dyndbg_bench` | 性能基准（内核态TSC精确计时） | `echo "mode=log iters=10000000" > .../dyndbg_bench` |
+| `dyndbg_trace` | trace 事件快照与丢失统计（per-CPU ring） | `cat .../dyndbg_trace` |
+| `dyndbg_hotspots` | 热点统计（跨CPU求和 top-10） | `cat .../dyndbg_hotspots` |
+| `dyndbg_bench` | 性能基准（内核态TSC精确计时 + 消融开关） | `echo "mode=log iters=10000000" > .../dyndbg_bench` |
 
-**规则语法**：`<selectors> +p|-p`（追加）、`del <id>`（删除）、`clear`（清空）。四维选择器支持子串匹配 + AND语义，采用 **last-match-wins** 冲突语义——追加规则即覆盖旧决策。
+**规则语法**：`<selectors> <action>`（追加）、`del <id>`（删除）、`clear`（清空）。四维选择器（file/module/func/line）AND 语义，keyword 采用**三通道匹配**——完整值精确 → 段精确（module 按 `::`、file 按 `/` 切段）→ 通配符（`*`/`?`）；action 支持 `+p/-p`（log 维度）、`+trace/-trace`（trace 维度）、格式标志 `+f/+l/+m/+t`、`-f/-l/-m/-t`、`=fl` 覆盖、`+_` 清空。采用 **last-match-wins** 冲突语义——追加规则即覆盖旧决策。
 
 ### 4.2 运行时过滤引擎
 
@@ -113,12 +115,10 @@
 
 | 子系统 | 实现 | 作用 |
 |--------|------|------|
-| **四维索引** | 四棵 `BTreeMap`（file/module/func/line） | 候选收集O(k)而非O(n)，file选择器显著加速 |
-| **增量重算** | 仅受影响描述符子集做规则链裁决 | 避免O(n·r)全量遍历，实测重算量降低77% |
-| **模块门控** | `AtomicU32` 启用计数 + 0↔1翻转触发修补 | 模块修补次数降低98.7% |
-| **Last-Match-Wins** | 规则链逆序匹配，首个命中即返回 | 追加规则自然覆盖，支持粗→细粒度收敛 |
-
-<img src="一些开发资料/pic/3.3/热路径门控决策.png" alt="热路径门控决策流程" width="40%">
+| **四维三通道索引** | 四棵主索引 `BTreeMap`（file/module/func/line 精确键）+ 两棵段倒排索引（module 按 `::`、file 按 `/`） | 候选收集 O(k) 而非 O(n)，四维全部享受 O(log N) 精确查表（消融实测 line 2.82× ~ file 8.40×） |
+| **增量刷新** | append 走增量刷新（不重跑规则链，O(k)），del/clear 走全量重放 | 实测 append 恒定 ~2µs 与规则链长度无关；增量与全量最终状态等价 |
+| **模块门控** | `AtomicU32` 启用计数 + 0↔1翻转触发批量修补 | 站点级波动收敛为至多一次修补事务，SMP 事务降低 5000× |
+| **Last-Match-Wins** | log/trace 双维度各自按链顺序裁决，最后命中者生效 | 追加规则自然覆盖，支持粗→细粒度收敛 |
 
 ### 4.3 静态指令修补层
 
@@ -128,7 +128,8 @@ x86_64上实现NOP5↔JMP rel32的SMP安全批量修补：
 |------|------|
 | **5字节指令槽** | 编译期预埋NOP5（`0x0F 0x1F 0x44 0x00 0x00`），启用时改写为JMP rel32（`0xE9` + 4字节偏移） |
 | **PatchRendezvous协议** | ①全局排他锁 → ②IPI集结远程CPU旋转等待 → ③关CR0.WP+关中断批量写入 → ④SeqCst屏障序列化流水线 → ⑤释放远程CPU |
-| **批量修补事务** | 模块级聚合：同一模块的全部站点在一次事务中完成，IPI广播次数降低32.5× |
+| **批量修补事务** | 模块级聚合：同一模块的全部站点在一次事务中完成，SMP事务次数降低 5000×（20,002,000 → 4,000），总耗时降低 24% |
+| **StaticKey 通用化** | NOP5↔JMP 修补抽象为 ostd 通用 `static_key` 原语，dyndbg 与调度器追踪（sched_trace）共享同一套补丁基础设施 |
 
 <img src="一些开发资料/pic/4_SMP-safe/SMP安全修补序列.png" alt="SMP安全修补序列" width="40%">
 
@@ -144,31 +145,31 @@ x86_64上实现NOP5↔JMP rel32的SMP安全批量修补：
 
 所有后端共享同一套过滤引擎——切换后端仅影响热路径，用户接口和规则语义完全统一。
 
-**linkme分布式注册**：`#[distributed_slice]` 将每个调用点的描述符和补丁站点分散定义到各编译单元，链接时自动合并为全局数组。启动时 `#[init_component]` 一次性遍历全局数组完成索引构建，运行中零动态分配。
+**linkme分布式注册**：`#[distributed_slice]` 将每个调用点的描述符、补丁站点与描述符↔站点关联（`DYNDBG_KEY_MAPPING`）分散定义到各编译单元，链接时自动合并为全局数组。启动时 `#[init_component]` 一次性遍历全局数组完成索引构建，运行中零动态分配。
 
-<img src="一些开发资料/pic/2编译时设施图/注册机制.svg" alt="编译期符号定义与linkme注册机制" width="50%">
+<img src="一些开发资料/pic/2注册机制/注册机制.svg" alt="编译期符号定义与linkme注册机制" width="50%">
 
-<img src="一些开发资料/pic/2宏系统图/02a.svg" alt="双后端宏系统决策树" width="50%">
+<img src="一些开发资料/pic/2双后端/双后端.svg" alt="双后端宏系统决策树" width="50%">
 
 ### 4.5 代码组织
 
 ```
 kernel/comps/logger/src/
-├── aster_logger.rs          ← dyndbg_debug! 宏（双后端入口 + 三路径）
-├── lib.rs                   ← 模块门控、索引、规则链裁决
-├── patch.rs                 ← 静态修补：NOP5↔JMP、PatchRendezvous协议
-├── console.rs               ← AsterLogger 实现
-└── dyndbg_bench/
-    ├── mod.rs               ← procfs接口：规则解析、基准执行、统计读取
-    └── bench_sites.rs       ← 64站点批量基准
+├── aster_logger.rs          ← 核心（~2800行）：DyndbgState 规则链/三通道索引/增量刷新/模块门控、dyndbg_debug! 宏（双后端 + no-op 三路径）、描述符与 KEY_MAPPING 注册
+├── dyndbg_trace.rs          ← per-CPU ring buffer + 热点计数器（trace 数据通路）
+├── lib.rs                   ← crate 根，init 组件注册
+└── console.rs               ← AsterLogger 实现（颜色输出）
 
 kernel/src/fs/fs_impls/procfs/sys/kernel/
-├── dynamic_debug.rs         ← /proc/sys/kernel/dynamic_debug
-├── dyndbg_bench.rs          ← /proc/sys/kernel/dyndbg_bench
-└── dyndbg_stats.rs          ← /proc/sys/kernel/dyndbg_stats
+├── dynamic_debug.rs         ← /proc/sys/kernel/dynamic_debug（规则管理 + 状态查看）
+├── dyndbg_stats.rs          ← /proc/sys/kernel/dyndbg_stats
+├── dyndbg_trace.rs          ← /proc/sys/kernel/dyndbg_trace（事件快照/丢失统计）
+├── dyndbg_hotspots.rs       ← /proc/sys/kernel/dyndbg_hotspots（热点 top-10）
+├── dyndbg_bench.rs          ← /proc/sys/kernel/dyndbg_bench（基准 + backend/index/recompute 消融开关）
+└── dyndbg_bench/bench_sites.rs  ← 64站点批量基准
 
-tools/dyndbg/                ← 10个测试脚本 + 编排脚本
-results/                     ← 测试结果CSV
+tools/dyndbg/                ← 15个测试脚本 + 编排/收集脚本
+results/                     ← 测试结果CSV（按维度分目录）
 ```
 
 全部 unsafe 代码被严格限制在指令编码（5字节机器码写入）、汇编符号导出和内联汇编对齐填充三个底层操作中，上层约95%的代码为 safe Rust。
@@ -177,17 +178,17 @@ results/                     ← 测试结果CSV
 
 ## 5. 系统测试情况
 
-测试覆盖**功能正确性 → 性能 → 增量优化 → 并发可靠性**四个维度，通过 `tools/dyndbg/` 下10个shell脚本驱动，基于procfs自包含测试接口在内核内部执行，结果以CSV持久化到 `results/` 目录。
+测试覆盖**功能正确性 → 性能 → 增量优化 → 并发可靠性**四个维度，通过 `tools/dyndbg/` 下15个shell脚本驱动，基于procfs自包含测试接口在内核内部执行，结果以CSV持久化到 `results/` 目录。
 
 > 测试环境：Intel Core i7-10700 @ 2.90GHz（8核16线程），16GB DDR4，Ubuntu 24.04 LTS，283个调试调用点，RELEASE=1构建。
 
-### 5.1 功能正确性（F-01 ~ F-08）
+### 5.1 功能正确性（F-01 ~ F-08 + 44 扩展用例）
 
-验证四维选择器匹配、last-match-wins语义、动态开关即时生效、异常输入安全处理：
+验证四维选择器匹配、last-match-wins语义、动态开关即时生效、异常输入安全处理，以及输出格式 flags（+f/+l/+m/+t）、三通道匹配语义（精确/段/通配符）、状态查看（cat 规则链与调试点状态）、trace 追踪与热点统计（per-CPU ring）、增量等价性：
 
 <img src="一些开发资料/pic/result_charts/tab1_functional.png" alt="功能正确性测试结果" width="70%">
 
-**8个用例全部通过**。关键结论：last-match-wins语义正确（追加规则自然覆盖旧决策）、动态开关即时生效（clear后立即回落disabled态）、异常输入安全处理（非法命令不改变规则链状态，不触发panic）。
+**F 8 用例 + 扩展 44 用例全部通过**。关键结论：last-match-wins语义正确（追加规则自然覆盖旧决策）、动态开关即时生效（clear后立即回落disabled态）、异常输入安全处理（非法命令不改变规则链状态，不触发panic）、三通道匹配索引 on/off 候选集一致、trace 事件与热点计数一致。
 
 ### 5.2 性能测试
 
@@ -199,11 +200,11 @@ results/                     ← 测试结果CSV
 
 | 后端 | 平均耗时 (µs) | 相对baseline增幅 |
 |------|-------------|-----------------|
-| baseline (no-op) | 9,355 | — |
-| branch (分支) | 9,625 | +2.9% |
-| static (禁用态) | 9,450 | +1.0% |
+| baseline (no-op) | 9,386 | — |
+| branch (分支) | 9,594 | +2.2% |
+| static (禁用态) | 9,485 | +1.1% |
 
-**禁用态NOP5穿透开销 ~0.95ns/调用点**，与baseline差异在测量噪声边界内（1.0%），达到事实上的零开销。
+**禁用态NOP5穿透开销 ~0.95ns/调用点**，经 TOST 等价性检验（δ=0.05 ns/call，90% CI [0.0014, 0.0183]，p<0.001）确认 static 与 baseline 统计等价，达到事实上的零开销。
 
 #### 真实工作负载
 
@@ -211,7 +212,7 @@ results/                     ← 测试结果CSV
 
 <img src="一些开发资料/pic/result_charts/fig2_workload.png" alt="真实工作负载开销对比" width="70%">
 
-全部6种负载在disabled模式下与baseline差异<2%，证明dyndbg在真实内核路径上的开销可忽略。
+全部6种负载在disabled模式下与baseline差异<2%，且 6/6 通过 TOST 等价性检验（δ=5% baseline），证明dyndbg在真实内核路径上的开销可忽略。
 
 #### 索引加速消融实验
 
@@ -221,10 +222,12 @@ results/                     ← 测试结果CSV
 
 | 选择器 | 加速比 | 说明 |
 |--------|--------|------|
-| line | 1.0× | 键空间稀疏，线性扫描已足够快 |
-| file | **1.6×** | 键约150个，远小于描述符总数283 |
-| func | 1.2× | 键约65个 |
-| module | 1.2× | 候选集虽大（65描述符），索引仍有效加速 |
+| line | **2.82×** | BTreeMap 精确键点查（O(log N)） |
+| file | **8.40×** | 段精确命中段倒排索引 |
+| func | 4.66× | 精确键命中返回单描述符 |
+| module | **5.60×** | 完整值精确命中主索引返回整模块 |
+
+四维全部享受索引加速；三模式分解（全量重算 L0 / 增量+扫描 L1 / 索引驱动增量 L2）显示 L2 较 L1 加速 5.6×。可扩展性实验（N=500~10,000）中精确查找类随规模线性放大：line **118×**、func **141×**、module **307×**（N=10,000），file 保持平坦 3.4-8.4×。
 
 #### 批量修补事务对比
 
@@ -232,23 +235,25 @@ per_site（逐站点）vs batch（模块级批量）在相同修补负载下的S
 
 <img src="一些开发资料/pic/result_charts/fig4_patch_bench.png" alt="批量修补事务对比" width="70%">
 
-| 后端 | SMP事务次数 | 每事务修补站点数 |
-|------|-----------|----------------|
-| per_site | 130,000 | 1 |
-| batch | 4,000 | 32.5 |
+| 后端 | 总耗时 (s) | SMP事务次数 | 每事务修补站点数 |
+|------|-----------|------------|----------------|
+| per_site | 12.41 | 20,002,000 | 1 |
+| batch | 9.38 | 4,000 | 5,000 |
 
-**SMP事务次数降低32.5×**，IPI广播开销与CPU核心数成正比，多核生产环境中优势更显著。
+**SMP事务次数降低 5000×**（同一批 20,002,000 个站点修补），总耗时降低 24%；IPI广播开销与CPU核心数成正比，多核生产环境中优势更显著。
 
 ### 5.3 增量更新验证
 
-| 指标 | 全量规则 (`+p`) | 模块规则 (`module=... +p`) | 缩减比例 |
-|------|----------------|---------------------------|----------|
-| 描述符重算量 | 283 | 65 | **77% ↓** |
-| 模块修补次数 | 153 | 2 | **98.7% ↓** |
-| 站点修补次数 | 283 | 65 | **77% ↓** |
-| 更新延迟 (µs) | 2,469 | 276 | **8.9× 加速** |
+append（增量刷新，不重跑规则链）与 del（全量重放）的更新延迟随规则链长度增长：
 
-验证了索引加速候选收集 + 模块级门控翻转机制的综合效果。
+| 规则链长度 | append 延迟 (µs) | del 延迟 (µs) | full 基线 (µs) |
+|-----------|-----------------|--------------|----------------|
+| 1 | 2 | 17 | 65 |
+| 100 | 2 | 1,158 | 65 |
+| 1,000 | 3 | 11,749 | 65 |
+| 5,000 | 2 | 58,363 | 65 |
+
+**append 恒定 ~2µs 与链长完全无关**（O(k)，只对命中集做增量变换）；del 随链长线性增长（O(L·k)，删除改变"最后命中者"必须重放整条链）；增量刷新与全量重放的最终描述符状态完全等价（EQ-01~04 通过）。
 
 ### 5.4 并发与压力测试
 
@@ -282,6 +287,14 @@ per_site（逐站点）vs batch（模块级批量）在相同修补负载下的S
 | **第8-10周** (06.01-10) | 索引消融实验完善；延迟索引优化；collect_results结果收集框架；全部结果CSV持久化 |
 | **第11周** (06.15-21) | 57页开发文档撰写；架构图/流程图制作；PPT与演示视频准备；代码清理与最终检查 |
 
+### 第三阶段：能力扩展（第12-17周）
+
+| 时间 | 里程碑 |
+|------|--------|
+| **第12-13周** (07.06-20) | 匹配引擎升级：三通道匹配（精确→段精确→通配符），四维全部索引化；输出格式 flags（+f/+l/+m/+t）与状态查看（cat 调试点状态） |
+| **第14-15周** (07.21-08.02) | 增量刷新路径（append 不重跑规则链，恒定 ~2µs）；基于 NOP5 槽的轻量级 Tracepoint（per-CPU ring + 丢失/热点统计）；测试套件扩展至 15 个脚本（FL/M/R/S/T/H/EQ 44 用例） |
+| **第16-17周** (08.03-12) | StaticKey 通用化（ostd 原语 + sched_trace 第二消费者）；重测全部结果数据；开发文档与测试文档全面更新（84 页 PDF） |
+
 ---
 
 ## 7. 分工和协作
@@ -289,8 +302,8 @@ per_site（逐站点）vs batch（模块级批量）在相同修补负载下的S
 | 队伍信息 | 承担工作 | 代码分布 |
 |----------|----------|----------|
 | 队伍名称：儒雅的读书人 | 系统架构设计与技术调研 | `kernel/comps/logger/src/` ← aster_logger crate |
-| 所属赛题：proj10 | 全部代码实现（~1500行核心） | `kernel/.../procfs/sys/kernel/` ← 用户接口 |
-| 成员：林辉 | shell测试套件设计执行 | `tools/dyndbg/` ← 测试脚本 |
+| 所属赛题：proj10 | 全部代码实现（~2800行核心） | `kernel/.../procfs/sys/kernel/` ← 用户接口 |
+| 成员：林辉 | shell测试套件设计执行（15 脚本） | `tools/dyndbg/` ← 测试脚本 |
 | 学校：厦门大学 | 开发文档撰写；架构图/流程图制作；PPT与演示视频准备 | `开发文档/` `演示材料/` `一些开发资料/` |
 
 完成设计、开发、测试与文档工作。
@@ -312,19 +325,25 @@ per_site（逐站点）vs batch（模块级批量）在相同修补负载下的S
 │   ├── dynamic_debug.rs          ← procfs规则管理接口
 │   ├── dyndbg_bench.rs           ← procfs性能基准接口
 │   └── dyndbg_stats.rs           ← procfs统计观测接口
-├── tools/dyndbg/                 ← 10个测试脚本
+├── tools/dyndbg/                 ← 15个测试脚本
 │   ├── run_all.sh                ← 测试编排脚本
 │   ├── functional.sh             ← 功能正确性（F-01~F-08）
+│   ├── flags.sh                  ← 输出格式 flags（FL-01~08）
+│   ├── match3.sh                 ← 三通道匹配语义（M-01~08）
+│   ├── robustness.sh             ← 异常命令鲁棒性（R-01~06）
+│   ├── status.sh                 ← 状态查看（S-01~07）
+│   ├── trace.sh                  ← 追踪与热点（T/H 系列）
 │   ├── perf.sh                   ← 微基准性能（P-01）
-│   ├── workload.sh               ← 真实负载开销（W-01~W-06）
+│   ├── workload.sh               ← 真实负载开销（P-01R）
 │   ├── index_ablation.sh         ← 索引消融实验（I-02）
+│   ├── scalability.sh            ← 索引可扩展性（N=500..10000）
 │   ├── patch_bench.sh            ← 批量修补对比（P-02）
-│   ├── incremental.sh            ← 增量更新验证（I-01）
+│   ├── incremental.sh            ← 增量刷新链长解耦（I-03 + EQ）
 │   ├── concurrency.sh            ← 并发开关（C-01）
 │   ├── stress.sh                 ← 高频压力（C-02）
 │   ├── patch_storm.sh            ← 修补风暴（C-03）
 │   └── collect_results.sh        ← 结果聚合
-├── results/                      ← 测试结果CSV
+├── results/                      ← 测试结果CSV（按维度分目录，scalability 按 N 分目录）
 ```
 
 ---
@@ -385,7 +404,18 @@ echo "file=inode.rs -p" > /proc/sys/kernel/dynamic_debug
 # 查看统计
 cat /proc/sys/kernel/dyndbg_stats
 
-# 运行微基准
+# 查看规则链与全部调试点状态（含 +p/+trace 状态列与格式标志）
+cat /proc/sys/kernel/dynamic_debug
+
+# 启用追踪并查看事件快照 / 热点
+echo "module=dyndbg_bench +trace" > /proc/sys/kernel/dynamic_debug
+cat /proc/sys/kernel/dyndbg_trace
+cat /proc/sys/kernel/dyndbg_hotspots
+
+# 输出格式前缀（函数名/行号/模块/线程ID）
+echo "file=open.rs +pfl" > /proc/sys/kernel/dynamic_debug
+
+# 运行微基准（可组合 backend/index/recompute 消融开关）
 echo "mode=log iters=10000000" > /proc/sys/kernel/dyndbg_bench
 cat /proc/sys/kernel/dyndbg_bench
 ```
