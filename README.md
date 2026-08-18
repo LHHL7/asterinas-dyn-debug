@@ -74,7 +74,7 @@
 
 系统整体采用**五层分层架构**，其中用户接口层、运行时过滤引擎和静态指令修补层属于运行时引擎，静态注册层和宏层属于编译时基础设施：
 
-<img src="一些开发资料/pic/1架构图/架构图.svg" alt="系统整体分层架构" width="100%">
+<p align="center"><img src="一些开发资料/pic/1架构图/架构图.svg" alt="系统整体分层架构" width="100%"></p>
 
 | 层次 | 职责 | 核心组件 |
 |------|------|----------|
@@ -89,7 +89,7 @@
 - **编译时链路**：宏层为每个调用点生成描述符和NOP5槽 → 静态注册层链接时聚合为全局数组 → 启动时一次性构建索引 → 运行时引擎基于静态数据执行过滤和修补
 - **运行时链路**：用户写入规则 → 过滤引擎翻译为启用/禁用决策 → 索引定位受影响描述符 → 模块门控0↔1翻转触发批量修补
 
-<img src="一些开发资料/pic/3-节首/控制路径.svg" alt="控制路径" width="100%">
+<p align="center"><img src="一些开发资料/pic/3-节首/控制路径.svg" alt="控制路径" width="100%"></p>
 
 ---
 
@@ -131,7 +131,7 @@ x86_64上实现NOP5↔JMP rel32的SMP安全批量修补：
 | **批量修补事务** | 模块级聚合：同一模块的全部站点在一次事务中完成，SMP事务次数降低 5000×（20,002,000 → 4,000），总耗时降低 24% |
 | **StaticKey 通用化** | NOP5↔JMP 修补抽象为 ostd 通用 `static_key` 原语，dyndbg 与调度器追踪（sched_trace）共享同一套补丁基础设施 |
 
-<img src="一些开发资料/pic/4_SMP-safe/SMP安全修补序列.png" alt="SMP安全修补序列" width="40%">
+<p align="center"><img src="一些开发资料/pic/4_SMP-safe/SMP安全修补序列.png" alt="SMP安全修补序列" width="40%"></p>
 
 ### 4.4 编译期基础设施
 
@@ -147,11 +147,33 @@ x86_64上实现NOP5↔JMP rel32的SMP安全批量修补：
 
 **linkme分布式注册**：`#[distributed_slice]` 将每个调用点的描述符、补丁站点与描述符↔站点关联（`DYNDBG_KEY_MAPPING`）分散定义到各编译单元，链接时自动合并为全局数组。启动时 `#[init_component]` 一次性遍历全局数组完成索引构建，运行中零动态分配。
 
-<img src="一些开发资料/pic/2注册机制/注册机制.svg" alt="编译期符号定义与linkme注册机制" width="50%">
+<p align="center"><img src="一些开发资料/pic/2注册机制/注册机制.svg" alt="编译期符号定义与linkme注册机制" width="50%"></p>
 
-<img src="一些开发资料/pic/2双后端/双后端.svg" alt="双后端宏系统决策树" width="50%">
+<p align="center"><img src="一些开发资料/pic/2双后端/双后端.svg" alt="双后端宏系统决策树" width="50%"></p>
 
-### 4.5 代码组织
+### 4.5 能力扩展：轻量级 Tracepoint 与 StaticKey 通用化
+
+**轻量级 Tracepoint**：在 NOP5 指令槽之上复用同一套补丁基础设施，实现与日志门控维度独立的追踪数据通路（`kernel/comps/logger/src/dyndbg_trace.rs`）：
+
+| 机制 | 说明 |
+|------|------|
+| **per-CPU 无锁 ring** | 每个 CPU 一个环形缓冲，中断关闭下入队（避免与日志输出竞争），事件携带 CPU 归属 |
+| **事件快照与丢失统计** | `dyndbg_trace` 读取各 CPU ring 事件快照与溢出丢失计数，`reset` 清零 |
+| **热点排行** | `dyndbg_hotspots` 跨 CPU 求和命中次数，输出 top-10 调用点 |
+| **双维度独立** | log 与 trace 维度独立裁决，`+p` 不产生 trace 事件、`+trace` 不产生日志；禁用态零额外开销 |
+
+<p align="center"><img src="一些开发资料/pic/6_tracepoint/tracepoint数据通路.svg" alt="tracepoint 数据通路" width="50%"></p>
+
+**StaticKey 通用化**：NOP5↔JMP 指令修补的底层机制与"动态调试"解耦，抽象为 ostd 通用 `static_key` 原语（`static_key_branch!` 宏 + 分布式站点注册表 + 按 tag 整组启停的批量 SMP 事务），任何内核代码都能零开销使用静态分支：
+
+| 消费者 | 用途 |
+|--------|------|
+| **dyndbg** | 每个调用点以 `tag="dyndbg"` 注册 StaticKeySite，模块级批量修补委托原语层 |
+| **sched_trace**（调度器范例） | 独立于 dyndbg 的第二个消费者：调度器在每次上下文切换的 `pick_next_entity` 热路径上埋点，以 `tag="SCHED_TRACE"` 整组启停，展示通用性 |
+
+<p align="center"><img src="一些开发资料/pic/5_static_key/static_key.svg" alt="StaticKey 通用化" width="50%"></p>
+
+### 4.6 代码组织
 
 ```
 kernel/comps/logger/src/
@@ -184,9 +206,20 @@ results/                     ← 测试结果CSV（按维度分目录）
 
 ### 5.1 功能正确性（F-01 ~ F-08 + 44 扩展用例）
 
-验证四维选择器匹配、last-match-wins语义、动态开关即时生效、异常输入安全处理，以及输出格式 flags（+f/+l/+m/+t）、三通道匹配语义（精确/段/通配符）、状态查看（cat 规则链与调试点状态）、trace 追踪与热点统计（per-CPU ring）、增量等价性：
+基础功能（F-01~F-08）验证四维选择器匹配、last-match-wins 语义、动态开关即时生效、异常输入安全处理；44 个扩展用例覆盖全部新增能力：
 
-<img src="一些开发资料/pic/result_charts/tab1_functional.png" alt="功能正确性测试结果" width="70%">
+| 类 | 脚本 | 用例 | 验证内容 |
+|----|------|------|----------|
+| **格式标志** | `flags.sh` | FL-01~08 | `+f/+l/+m/+t` 前缀组合、`-f` 清除、`=fl` 覆盖、`+_` 清空、多规则累积 |
+| **三通道匹配** | `match3.sh` | M-01~08 | 完整值精确/段精确/通配符三级语义、func 原子、索引 on/off 候选集等价 |
+| **鲁棒性** | `robustness.sh` | R-01~06 | 非法动作/flags/del、超长命令、空命令不破坏规则链、出错后系统健康 |
+| **状态查看** | `status.sh` | S-01~07 | `cat` 规则链带索引输出、+p/+trace 状态列、del/clear 状态重置 |
+| **追踪与热点** | `trace.sh` | T-01~06、H-01~04 | log/trace 维度独立、ring 溢出丢失统计、per-CPU 归属、热点 top-10 与事件一致 |
+| **增量等价** | `incremental.sh` | EQ-01~04 | append last-match-wins、flags-only 保持开关、增量刷新 == 全量重放 |
+
+测试通过（F 8 + FL 8 + M 8 + R 6 + S 7 + T/H 11 + EQ 4 = 44 用例）：
+
+<p align="center"><img src="一些开发资料/pic/result_charts/tab1_functional.png" alt="功能正确性测试结果" width="70%"></p>
 
 **F 8 用例 + 扩展 44 用例全部通过**。关键结论：last-match-wins语义正确（追加规则自然覆盖旧决策）、动态开关即时生效（clear后立即回落disabled态）、异常输入安全处理（非法命令不改变规则链状态，不触发panic）、三通道匹配索引 on/off 候选集一致、trace 事件与热点计数一致。
 
@@ -196,7 +229,7 @@ results/                     ← 测试结果CSV（按维度分目录）
 
 三种后端各1000万次迭代×50轮，内核态TSC精确计时：
 
-<img src="一些开发资料/pic/result_charts/fig1_p01_perf.png" alt="微基准热路径性能对比" width="70%">
+<p align="center"><img src="一些开发资料/pic/result_charts/fig1_p01_perf.png" alt="微基准热路径性能对比" width="70%"></p>
 
 | 后端 | 平均耗时 (µs) | 相对baseline增幅 |
 |------|-------------|-----------------|
@@ -210,7 +243,7 @@ results/                     ← 测试结果CSV（按维度分目录）
 
 6种系统调用负载（create_delete/rename/pipe_comm等），disabled与baseline不可区分：
 
-<img src="一些开发资料/pic/result_charts/fig2_workload.png" alt="真实工作负载开销对比" width="70%">
+<p align="center"><img src="一些开发资料/pic/result_charts/fig2_workload.png" alt="真实工作负载开销对比" width="70%"></p>
 
 全部6种负载在disabled模式下与baseline差异<2%，且 6/6 通过 TOST 等价性检验（δ=5% baseline），证明dyndbg在真实内核路径上的开销可忽略。
 
@@ -218,7 +251,7 @@ results/                     ← 测试结果CSV（按维度分目录）
 
 运行时热切换 `index=on|off`，对比四种选择器的索引加速效果：
 
-<img src="一些开发资料/pic/result_charts/fig3_index_ablation.png" alt="索引消融实验结果" width="70%">
+<p align="center"><img src="一些开发资料/pic/result_charts/fig3_index_ablation.png" alt="索引消融实验结果" width="70%"></p>
 
 | 选择器 | 加速比 | 说明 |
 |--------|--------|------|
@@ -233,7 +266,7 @@ results/                     ← 测试结果CSV（按维度分目录）
 
 per_site（逐站点）vs batch（模块级批量）在相同修补负载下的SMP事务次数对比：
 
-<img src="一些开发资料/pic/result_charts/fig4_patch_bench.png" alt="批量修补事务对比" width="70%">
+<p align="center"><img src="一些开发资料/pic/result_charts/fig4_patch_bench.png" alt="批量修补事务对比" width="70%"></p>
 
 | 后端 | 总耗时 (s) | SMP事务次数 | 每事务修补站点数 |
 |------|-----------|------------|----------------|
