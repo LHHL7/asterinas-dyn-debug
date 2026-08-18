@@ -59,7 +59,7 @@
 见[测试文档](最终开发材料汇总/测试文档.md)
 
 ### 2.3 ppt
-见[项目展示汇报](最终开发材料汇总/项目展示汇报.pptx)
+见[答辩ppt](最终开发材料汇总/答辩ppt.pptx)
 
 ### 2.4 演示视频
 通过网盘分享的文件：项目演示视频
@@ -214,7 +214,7 @@ results/                     ← 测试结果CSV（按维度分目录）
 | **三通道匹配** | `match3.sh` | M-01~08 | 完整值精确/段精确/通配符三级语义、func 原子、索引 on/off 候选集等价 |
 | **鲁棒性** | `robustness.sh` | R-01~06 | 非法动作/flags/del、超长命令、空命令不破坏规则链、出错后系统健康 |
 | **状态查看** | `status.sh` | S-01~07 | `cat` 规则链带索引输出、+p/+trace 状态列、del/clear 状态重置 |
-| **追踪与热点** | `trace.sh` | T-01~06、H-01~04 | log/trace 维度独立、ring 溢出丢失统计、per-CPU 归属、热点 top-10 与事件一致 |
+| **追踪与热点** | `trace.sh` | T-01-06、H-01-04 | log/trace 维度独立、ring 溢出丢失统计、per-CPU 归属、热点 top-10 与事件一致 |
 | **增量等价** | `incremental.sh` | EQ-01~04 | append last-match-wins、flags-only 保持开关、增量刷新 == 全量重放 |
 
 测试通过（F 8 + FL 8 + M 8 + R 6 + S 7 + T/H 11 + EQ 4 = 44 用例）：
